@@ -88,27 +88,43 @@ class StravaService:
         user: User,
         after: Optional[datetime] = None,
         before: Optional[datetime] = None,
-        per_page: int = 50,
+        per_page: int = 200,
     ) -> List[Dict[str, Any]]:
-        """Fetch activities from Strava."""
+        """Fetch all activities from Strava within the timeframe (paginated)."""
         access_token = await self.refresh_token(user)
         if not access_token:
             raise ValueError("Strava non connecté. Veuillez d'abord connecter votre compte Strava.")
         
-        params = {"per_page": per_page}
-        if after:
-            params["after"] = int(after.timestamp())
-        if before:
-            params["before"] = int(before.timestamp())
+        all_activities = []
+        page = 1
         
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.BASE_URL}/athlete/activities",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params=params,
-            )
-            response.raise_for_status()
-            return response.json()
+            while True:
+                params = {"per_page": per_page, "page": page}
+                if after:
+                    params["after"] = int(after.timestamp())
+                if before:
+                    params["before"] = int(before.timestamp())
+                
+                response = await client.get(
+                    f"{self.BASE_URL}/athlete/activities",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+                response.raise_for_status()
+                page_data = response.json()
+                
+                if not page_data:
+                    break
+                
+                all_activities.extend(page_data)
+                
+                if len(page_data) < per_page:
+                    break
+                
+                page += 1
+                
+        return all_activities
     
     async def get_activity_streams(
         self,
@@ -142,7 +158,7 @@ class StravaService:
     async def sync_activities(
         self,
         user: User,
-        days: int = 30,
+        days: int = 365,
     ) -> Dict[str, Any]:
         """
         Sync activities from Strava, classify them, and calculate metrics.

@@ -32,11 +32,15 @@ def get_current_user(db: Session = Depends(get_db)) -> User:
 @router.get("/", response_model=List[RaceGoalResponse])
 def list_goals(
     status: str = None,
+    include_archived: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """List user's race goals."""
     query = db.query(RaceGoal).filter(RaceGoal.user_id == user.id)
+    
+    if not include_archived:
+        query = query.filter(RaceGoal.is_archived == False)
     
     if status:
         query = query.filter(RaceGoal.status == status)
@@ -107,7 +111,7 @@ def delete_goal(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Delete a race goal and its associated plan."""
+    """Archive a race goal (soft delete). Also archives associated sessions and threads."""
     goal = (
         db.query(RaceGoal)
         .filter(RaceGoal.id == goal_id, RaceGoal.user_id == user.id)
@@ -116,9 +120,54 @@ def delete_goal(
     if not goal:
         raise HTTPException(status_code=404, detail="Goal not found")
     
-    db.delete(goal)
+    # Soft delete: archive the goal, sessions, and threads
+    goal.is_archived = True
+    
+    # Archive all planned sessions
+    db.query(PlannedSession).filter(
+        PlannedSession.race_goal_id == goal_id
+    ).update({"is_archived": True})
+    
+    # Archive all threads (if model has is_archived)
+    from app.models import CoachingThread
+    db.query(CoachingThread).filter(
+        CoachingThread.race_goal_id == goal_id
+    ).update({"is_archived": True})
+    
     db.commit()
-    return {"message": "Goal deleted successfully"}
+    return {"message": "Goal archived successfully"}
+
+
+@router.post("/{goal_id}/restore")
+def restore_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Restore an archived goal."""
+    goal = (
+        db.query(RaceGoal)
+        .filter(RaceGoal.id == goal_id, RaceGoal.user_id == user.id)
+        .first()
+    )
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    goal.is_archived = False
+    
+    # Restore sessions
+    db.query(PlannedSession).filter(
+        PlannedSession.race_goal_id == goal_id
+    ).update({"is_archived": False})
+    
+    # Restore threads
+    from app.models import CoachingThread
+    db.query(CoachingThread).filter(
+        CoachingThread.race_goal_id == goal_id
+    ).update({"is_archived": False})
+    
+    db.commit()
+    return {"message": "Goal restored successfully"}
 
 
 @router.post("/{goal_id}/generate-plan")

@@ -8,7 +8,8 @@ import { DailyCheckin } from './components/DailyCheckin';
 import { CoachingPanel } from './components/CoachingPanel';
 import { RaceGoalForm } from './components/RaceGoalForm';
 import { TrainingCalendar } from './components/TrainingCalendar';
-import { AuthPage } from './pages/AuthPage';
+import { LandingPage } from './pages/LandingPage';
+import AuthModal from './components/AuthModal';
 
 function AppContent() {
     const { user, isAuthenticated, logout } = useAuth();
@@ -41,10 +42,15 @@ function AppContent() {
 
     const [error, setError] = useState(null);
 
-    // Fetch all data on mount
+    // Fetch all data on mount if authenticated
     useEffect(() => {
-        loadDashboardData();
-    }, []);
+        if (isAuthenticated) {
+            loadDashboardData();
+        } else {
+            // Reset critical data when not authenticated (though component will likely unmount)
+            setData({ ...data, activities: [], fitnessHistory: null, stats: null });
+        }
+    }, [isAuthenticated]);
 
     useEffect(() => {
         if (activeTab === 'goals') {
@@ -107,7 +113,7 @@ function AppContent() {
         setError(null);
 
         try {
-            const result = await api.syncStrava(30);
+            const result = await api.syncStrava(365);
             console.log('Sync result:', result);
             await loadDashboardData();
         } catch (err) {
@@ -139,11 +145,22 @@ function AppContent() {
         setSelectedGoalId(goal.id);
     };
 
+    if (!isAuthenticated) {
+        return (
+            <>
+                <LandingPage />
+                {showAuthModal && (
+                    <AuthModal onClose={() => setShowAuthModal(false)} />
+                )}
+            </>
+        );
+    }
+
     return (
         <div className="app-container">
-            {/* Auth Modal */}
+            {/* Auth Modal (for re-auth or profile if needed) */}
             {showAuthModal && (
-                <AuthPage onClose={() => setShowAuthModal(false)} />
+                <AuthModal onClose={() => setShowAuthModal(false)} />
             )}
 
             {/* Header */}
@@ -296,6 +313,10 @@ function AppContent() {
                                 <TrainingCalendar
                                     goalId={selectedGoalId}
                                     onSessionClick={(session) => console.log('Session clicked:', session)}
+                                    onGoalArchived={() => {
+                                        loadGoals();
+                                        setSelectedGoalId(null); // Reset selection to avoid showing archived goal
+                                    }}
                                 />
                             )}
 

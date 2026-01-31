@@ -1,6 +1,6 @@
 """Training plan and planned session models."""
 
-from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, JSON, Text
+from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, JSON, Text, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -53,6 +53,10 @@ class PlannedSession(Base):
     # Completion tracking
     status = Column(String(50), default="planned")  # planned, completed, skipped, modified
     linked_activity_id = Column(Integer, ForeignKey("activities.id"), nullable=True)
+    is_archived = Column(Boolean, default=False, index=True)  # Soft delete
+    
+    # Link to coaching message that created/modified this session
+    thread_message_id = Column(Integer, ForeignKey("coaching_messages.id"), nullable=True)
     
     # External integrations
     google_calendar_event_id = Column(String(255), nullable=True)

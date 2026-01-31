@@ -76,7 +76,7 @@ class ApiService {
         return this.fetch('/auth/status');
     }
 
-    syncStrava(days = 30) {
+    syncStrava(days = 365) {
         return this.fetch(`/auth/strava/sync?days=${days}`, { method: 'POST' });
     }
 
@@ -173,8 +173,49 @@ class ApiService {
     getGoalCalendar(goalId) {
         return this.fetch(`/goals/${goalId}/calendar`);
     }
+
+    restoreGoal(goalId) {
+        return this.fetch(`/goals/${goalId}/restore`, { method: 'POST' });
+    }
+
+    // ============== Coaching Threads ==============
+
+    getGoalThreads(goalId, includeArchived = false) {
+        return this.fetch(`/threads/goal/${goalId}?include_archived=${includeArchived}`);
+    }
+
+    createThread(goalId, data = {}) {
+        return this.fetch(`/threads/goal/${goalId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+                title: data.title || 'Discussion avec le coach',
+                description: data.description || null,
+                initial_message: data.initialMessage || null,
+            }),
+        });
+    }
+
+    getThread(threadId) {
+        return this.fetch(`/threads/${threadId}`);
+    }
+
+    sendMessage(threadId, content) {
+        return this.fetch(`/threads/${threadId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content }),
+        });
+    }
+
+    archiveThread(threadId) {
+        return this.fetch(`/threads/${threadId}`, { method: 'DELETE' });
+    }
+
+    restoreThread(threadId) {
+        return this.fetch(`/threads/${threadId}/restore`, { method: 'POST' });
+    }
 }
 
 export const api = new ApiService();
 export default api;
+
 

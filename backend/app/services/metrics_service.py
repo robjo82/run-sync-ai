@@ -134,8 +134,8 @@ class MetricsService:
         """
         as_of_date = as_of_date or date.today()
         
-        # Get last 60 days of activities for accurate calculation
-        start_date = as_of_date - timedelta(days=60)
+        # Get last 180 days of activities for accurate calculation (stabilize CTL)
+        start_date = as_of_date - timedelta(days=180)
         
         # Initialize with reasonable defaults
         ctl = 0.0

@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Mail, Lock, User, ArrowRight, AlertCircle } from 'lucide-react';
 
-export function AuthPage({ onClose }) {
-    const [mode, setMode] = useState('login'); // 'login' or 'register'
+export function AuthModal({ onClose, initialMode = 'login' }) {
+    const [mode, setMode] = useState(initialMode); // 'login' or 'register'
     const [formData, setFormData] = useState({
         email: '',
         password: '',
@@ -249,4 +249,4 @@ export function AuthPage({ onClose }) {
     );
 }
 
-export default AuthPage;
+export default AuthModal;

@@ -34,6 +34,7 @@ class RaceGoal(Base):
     status = Column(String(20), default="planning")  # planning, active, completed, cancelled
     plan_generated = Column(Boolean, default=False)
     plan_generated_at = Column(Date, nullable=True)
+    is_archived = Column(Boolean, default=False, index=True)  # Soft delete
     
     # Notes
     notes = Column(Text, nullable=True)
@@ -46,6 +47,7 @@ class RaceGoal(Base):
     # Relationships
     user = relationship("User", back_populates="race_goals")
     planned_sessions = relationship("PlannedSession", back_populates="race_goal", cascade="all, delete-orphan")
+    threads = relationship("CoachingThread", back_populates="race_goal", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<RaceGoal {self.name} - {self.race_date}>"

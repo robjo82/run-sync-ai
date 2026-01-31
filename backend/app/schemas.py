@@ -269,6 +269,7 @@ class RaceGoalResponse(RaceGoalBase):
     plan_generated: bool
     weeks_until_race: Optional[int] = None
     plan_explanation: Optional[str] = None
+    is_archived: bool = False
 
     class Config:
         from_attributes = True
@@ -280,3 +281,72 @@ class RaceGoalWithPlan(RaceGoalResponse):
 
     class Config:
         from_attributes = True
+
+
+# ============== Coaching Thread Schemas ==============
+
+class CoachingMessageBase(BaseModel):
+    """Base schema for coaching messages."""
+    content: str
+
+
+class CoachingMessageCreate(CoachingMessageBase):
+    """Schema for creating a coaching message."""
+    pass
+
+
+class CoachingMessageResponse(CoachingMessageBase):
+    """Schema for coaching message response."""
+    id: int
+    thread_id: int
+    role: str  # "user", "coach", "system"
+    message_type: str  # "plan_request", "explanation", "question", "adjustment", "off_topic"
+    sessions_affected: Optional[List[Dict[str, Any]]] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CoachingThreadBase(BaseModel):
+    """Base schema for coaching threads."""
+    title: str = "Discussion avec le coach"
+    description: Optional[str] = None
+
+
+class CoachingThreadCreate(CoachingThreadBase):
+    """Schema for creating a coaching thread."""
+    initial_message: Optional[str] = None  # Optional first user message
+
+
+class CoachingThreadResponse(CoachingThreadBase):
+    """Schema for coaching thread response."""
+    id: int
+    race_goal_id: int
+    is_archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    message_count: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CoachingThreadWithMessages(CoachingThreadResponse):
+    """Coaching thread with all its messages."""
+    messages: List[CoachingMessageResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class SendMessageRequest(BaseModel):
+    """Request to send a message in a coaching thread."""
+    content: str
+
+
+class SendMessageResponse(BaseModel):
+    """Response after sending a message (includes coach reply)."""
+    user_message: CoachingMessageResponse
+    coach_response: CoachingMessageResponse
+    sessions_modified: Optional[List[Dict[str, Any]]] = None

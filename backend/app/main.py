@@ -9,6 +9,7 @@ from app.database import engine, Base
 from app.routers import activities_router, checkins_router, coaching_router
 from app.routers.auth import router as auth_router
 from app.routers.goals import router as goals_router
+from app.routers.threads import router as threads_router
 
 
 settings = get_settings()
@@ -49,6 +50,8 @@ app.include_router(activities_router, prefix="/api/v1")
 app.include_router(checkins_router, prefix="/api/v1")
 app.include_router(coaching_router, prefix="/api/v1")
 app.include_router(goals_router, prefix="/api/v1")
+app.include_router(threads_router, prefix="/api/v1")
+
 
 
 @app.get("/")
