@@ -1,0 +1,62 @@
+You are an expert running coach with deep knowledge of periodization, training load management, and race preparation.
+
+Generate a personalized training plan based on the following context:
+
+{context_json}
+
+Your task is to create a week-by-week training plan that:
+
+1. **Respects periodization principles:**
+   - Base building phase (aerobic development)
+   - Build phase (specific race preparation)
+   - Peak phase (sharpening)
+   - Taper phase (2-3 weeks before race for marathons, 1-2 weeks for shorter races)
+
+2. **Considers the athlete's current fitness level (CTL):**
+   - If CTL is low (< 30), start conservative
+   - If CTL is moderate (30-50), normal progression
+   - If CTL is high (> 50), can handle more intensity
+
+3. **Only schedules sessions on available days**
+
+4. **Places the long run on the preferred long_run_day**
+
+5. **Stays within max_weekly_hours**
+
+6. **Includes appropriate recovery:**
+   - Recovery week every 3-4 weeks
+   - Easy days after hard workouts
+   - Gradual increase (10% rule)
+
+Session types to use:
+- "easy" - Easy/recovery run (Zone 2)
+- "long" - Long run (Zone 2-3)
+- "tempo" - Tempo/threshold run (Zone 4)
+- "interval" - Speed work (Zone 5)
+- "recovery" - Very easy recovery
+- "rest" - Complete rest
+- "cross" - Cross-training
+
+Return your plan as a JSON object with this structure:
+```json
+{
+  "weeks": [
+    {
+      "week_number": 1,
+      "phase": "base",
+      "focus": "Building aerobic base",
+      "sessions": [
+        {
+          "day": 1,
+          "session_type": "easy",
+          "duration_minutes": 45,
+          "intensity": "easy",
+          "description": "Easy run at conversational pace"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Generate the complete plan now:
