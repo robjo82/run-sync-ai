@@ -163,16 +163,30 @@ function AppContent() {
     // State for coach auto-message
     const [coachAutoMessage, setCoachAutoMessage] = useState(null);
 
+    // State for session details modal
+    const [selectedSession, setSelectedSession] = useState(null);
+
     const handleGoalCreated = (goal) => {
         setShowGoalForm(false);
         loadGoals();
         setSelectedGoalId(goal.id);
 
+        // Format target time from seconds
+        const formatTargetTime = (seconds) => {
+            if (!seconds || seconds < 60) return 'Non spécifié';
+            const hours = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (hours > 0) {
+                return `${hours}h${mins.toString().padStart(2, '0')}`;
+            }
+            return `${mins}min`;
+        };
+
         // Trigger auto-message to coach with full context
         const autoMsg = `Bonjour Coach ! Je viens de créer un nouvel objectif : 
 - **Nom** : ${goal.name}
 - **Course** : ${goal.race_type} le ${new Date(goal.race_date).toLocaleDateString('fr-FR')}
-- **Objectif temps** : ${goal.target_time || 'Non spécifié'}
+- **Objectif temps** : ${formatTargetTime(goal.target_time_seconds)}
 
 Peux-tu m'aider à créer un plan d'entraînement adapté à mon profil et mon historique d'activités ?`;
         setCoachAutoMessage(autoMsg);
@@ -295,6 +309,7 @@ Peux-tu m'aider à créer un plan d'entraînement adapté à mon profil et mon h
                             goalId={selectedGoalId}
                             loading={loading.activities}
                             onClassify={() => loadDashboardData({ refreshStatsOnly: true })}
+                            onSessionClick={(session) => setSelectedSession(session)}
                         />
                     </div>
 
@@ -453,6 +468,126 @@ Peux-tu m'aider à créer un plan d'entraînement adapté à mon profil et mon h
                                 Archiver
                             </button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Session Details Modal */}
+            {selectedSession && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.7)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000,
+                }}
+                    onClick={() => setSelectedSession(null)}
+                >
+                    <div style={{
+                        background: '#1e1e2f',
+                        borderRadius: 'var(--radius-lg)',
+                        padding: 'var(--space-lg)',
+                        maxWidth: '500px',
+                        width: '90%',
+                        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                    }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-md)' }}>
+                            <div>
+                                <span style={{ fontSize: '1.5rem', marginRight: 'var(--space-sm)' }}>
+                                    {selectedSession.session_type === 'easy' && '🏃'}
+                                    {selectedSession.session_type === 'long' && '🏃‍♂️'}
+                                    {selectedSession.session_type === 'tempo' && '⚡'}
+                                    {selectedSession.session_type === 'interval' && '🔥'}
+                                    {selectedSession.session_type === 'recovery' && '🧘'}
+                                    {selectedSession.session_type === 'rest' && '😴'}
+                                    {selectedSession.type === 'activity' && '✅'}
+                                </span>
+                                <h3 style={{ display: 'inline', color: 'var(--color-text)' }}>
+                                    {selectedSession.title || selectedSession.session_type || 'Séance'}
+                                </h3>
+                            </div>
+                            <button
+                                onClick={() => setSelectedSession(null)}
+                                style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: 'var(--color-text-muted)',
+                                    fontSize: '1.5rem',
+                                    cursor: 'pointer',
+                                    lineHeight: 1,
+                                }}
+                            >×</button>
+                        </div>
+
+                        <div style={{ display: 'grid', gap: 'var(--space-sm)', marginBottom: 'var(--space-lg)' }}>
+                            <div style={{ display: 'flex', gap: 'var(--space-md)' }}>
+                                <span style={{ color: 'var(--color-text-muted)', minWidth: '80px' }}>📅 Date</span>
+                                <span style={{ color: 'var(--color-text)' }}>
+                                    {new Date(selectedSession.date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                                </span>
+                            </div>
+                            {selectedSession.target_duration_min && (
+                                <div style={{ display: 'flex', gap: 'var(--space-md)' }}>
+                                    <span style={{ color: 'var(--color-text-muted)', minWidth: '80px' }}>⏱️ Durée</span>
+                                    <span style={{ color: 'var(--color-text)' }}>{selectedSession.target_duration_min} min</span>
+                                </div>
+                            )}
+                            {selectedSession.target_distance_km && (
+                                <div style={{ display: 'flex', gap: 'var(--space-md)' }}>
+                                    <span style={{ color: 'var(--color-text-muted)', minWidth: '80px' }}>📏 Distance</span>
+                                    <span style={{ color: 'var(--color-text)' }}>{selectedSession.target_distance_km} km</span>
+                                </div>
+                            )}
+                            {selectedSession.target_pace && (
+                                <div style={{ display: 'flex', gap: 'var(--space-md)' }}>
+                                    <span style={{ color: 'var(--color-text-muted)', minWidth: '80px' }}>🏃 Allure</span>
+                                    <span style={{ color: 'var(--color-text)' }}>{selectedSession.target_pace}</span>
+                                </div>
+                            )}
+                            {selectedSession.intensity && (
+                                <div style={{ display: 'flex', gap: 'var(--space-md)' }}>
+                                    <span style={{ color: 'var(--color-text-muted)', minWidth: '80px' }}>💪 Intensité</span>
+                                    <span style={{ color: 'var(--color-text)' }}>{selectedSession.intensity}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {selectedSession.description && (
+                            <div style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                borderRadius: 'var(--radius-md)',
+                                padding: 'var(--space-md)',
+                                fontSize: '0.9rem',
+                                lineHeight: 1.5,
+                                color: 'var(--color-text-secondary)',
+                            }}>
+                                {selectedSession.description}
+                            </div>
+                        )}
+
+                        {selectedSession.workout_details && (
+                            <div style={{
+                                background: 'rgba(99, 102, 241, 0.1)',
+                                borderRadius: 'var(--radius-md)',
+                                padding: 'var(--space-md)',
+                                marginTop: 'var(--space-md)',
+                                fontSize: '0.9rem',
+                                lineHeight: 1.5,
+                                color: 'var(--color-text)',
+                                borderLeft: '3px solid var(--color-primary)',
+                            }}>
+                                <strong style={{ display: 'block', marginBottom: 'var(--space-xs)' }}>📋 Détails</strong>
+                                {selectedSession.workout_details}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}

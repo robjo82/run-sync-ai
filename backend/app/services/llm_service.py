@@ -18,7 +18,8 @@ class LLMProvider(ABC):
         prompt: str,
         model: str = "default",
         temperature: float = 0.7,
-        max_tokens: int = 1000,
+        max_tokens: int = 2000,
+        thinking_level: Optional[str] = None,  # "off", "low", "medium", "high"
     ) -> str:
         """Generate a completion from the LLM."""
         pass
@@ -29,19 +30,23 @@ class LLMProvider(ABC):
         prompt: str,
         model: str = "default",
         temperature: float = 0.3,
+        thinking_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a JSON response from the LLM."""
         pass
 
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini LLM provider."""
+    """Google Gemini LLM provider with Gemini 3 thinking support."""
     
     MODELS = {
         "flash": "gemini-3-flash-preview",
         "pro": "gemini-3-pro-preview",
         "default": "gemini-3-flash-preview",
     }
+    
+    # Thinking levels for Gemini 3 models
+    THINKING_LEVELS = {"off", "low", "medium", "high"}
     
     def __init__(self):
         settings = get_settings()
@@ -58,15 +63,35 @@ class GeminiProvider(LLMProvider):
         prompt: str,
         model: str = "default",
         temperature: float = 0.7,
-        max_tokens: int = 1000,
+        max_tokens: int = 2000,
+        thinking_level: Optional[str] = None,  # "off", "low", "medium", "high"
     ) -> str:
-        """Generate a completion using Gemini."""
+        """Generate a completion using Gemini.
+        
+        Args:
+            prompt: The prompt text
+            model: Model to use (flash, pro, default)
+            temperature: Creativity (0.0-1.0)
+            max_tokens: Max output tokens
+            thinking_level: Gemini 3 thinking depth ("off", "low", "medium", "high")
+                           - "off" or None: No extended thinking
+                           - "low": Fast thinking for simple tasks
+                           - "medium": Balanced thinking
+                           - "high": Deep thinking for complex reasoning
+        """
         model_instance = self._get_model(model)
         
-        generation_config = genai.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        )
+        # Build generation config
+        config_dict = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
+        
+        # Add thinking config for Gemini 3 if specified
+        if thinking_level and thinking_level in self.THINKING_LEVELS and thinking_level != "off":
+            config_dict["thinking_config"] = {"thinking_level": thinking_level}
+        
+        generation_config = genai.GenerationConfig(**config_dict)
         
         response = model_instance.generate_content(
             prompt,
@@ -80,6 +105,7 @@ class GeminiProvider(LLMProvider):
         prompt: str,
         model: str = "default",
         temperature: float = 0.3,
+        thinking_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a JSON response using Gemini."""
         # Add JSON instruction to prompt
@@ -89,6 +115,8 @@ class GeminiProvider(LLMProvider):
             json_prompt,
             model=model,
             temperature=temperature,
+            max_tokens=4000,
+            thinking_level=thinking_level,
         )
         
         # Clean up response (remove markdown code blocks if present)

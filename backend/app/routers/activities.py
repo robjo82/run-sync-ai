@@ -71,11 +71,50 @@ async def get_personal_records(
     
     # Fetch Strava career stats
     strava_service = StravaService(db)
-    strava_stats = await strava_service.get_athlete_stats(user)
+    
+    try:
+        import httpx
+        try:
+            strava_stats = await strava_service.get_athlete_stats(user)
+        except (httpx.TimeoutException, httpx.ConnectError, Exception) as e:
+            print(f"Strava stats fetch failed: {e}")
+            strava_stats = {}
+    except Exception:
+        strava_stats = {}
     
     all_run = strava_stats.get("all_run_totals", {})
     recent_run = strava_stats.get("recent_run_totals", {})
     ytd_run = strava_stats.get("ytd_run_totals", {})
+    
+    # Fallback: if Strava stats missing, calculate from local DB
+    if not all_run:
+        all_activities = db.query(Activity).filter(Activity.user_id == user.id).all()
+        current_year = datetime.now().year
+        now = datetime.now()
+        four_weeks_ago = now - timedelta(weeks=4)
+        
+        # Career
+        all_run = {
+            "count": len(all_activities),
+            "distance": sum(a.distance for a in all_activities),
+            "moving_time": sum(a.moving_time for a in all_activities),
+            "elevation_gain": sum(a.total_elevation_gain for a in all_activities),
+        }
+        
+        # YTD
+        ytd_activities = [a for a in all_activities if a.start_date.year == current_year]
+        ytd_run = {
+            "count": len(ytd_activities),
+            "distance": sum(a.distance for a in ytd_activities),
+            "elevation_gain": sum(a.total_elevation_gain for a in ytd_activities),
+        }
+        
+        # Recent 4w
+        recent_activities = [a for a in all_activities if a.start_date >= four_weeks_ago]
+        recent_run = {
+            "count": len(recent_activities),
+            "distance": sum(a.distance for a in recent_activities),
+        }
     
     # Aggregate best efforts from stored activities
     # Strava stores best_efforts as: [{name: "5K", elapsed_time: 1256, ...}, ...]

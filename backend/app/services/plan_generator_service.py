@@ -300,8 +300,49 @@ class PlanGeneratorService:
         """Call LLM to generate the training plan with explanation."""
         try:
             prompt = self.llm_service.provider.load_prompt("generate_plan")
-            prompt = prompt.replace("{context_json}", json.dumps(context, indent=2, default=str, ensure_ascii=False))
-        except:
+            
+            # Get athlete profile summary
+            from app.services.athlete_profile_service import AthleteProfileService
+            profile_service = AthleteProfileService(self.db)
+            
+            # Build user from context (need to reconstruct for profile service)
+            user = self.db.query(User).filter(User.id == context.get("user_id")).first() if context.get("user_id") else None
+            goal = self.db.query(RaceGoal).filter(RaceGoal.id == context.get("goal_id")).first() if context.get("goal_id") else None
+            
+            athlete_profile = ""
+            if user and goal:
+                athlete_profile = profile_service.get_profile_summary_for_prompt(user, goal)
+            
+            # Format the prompt with all required variables
+            prompt = prompt.replace("{athlete_profile}", athlete_profile)
+            prompt = prompt.replace("{goal_name}", context.get("race_name", "Course"))
+            prompt = prompt.replace("{race_type}", context.get("race_type", "10k"))
+            prompt = prompt.replace("{race_date}", str(context.get("race_date", "")))
+            prompt = prompt.replace("{weeks_until_race}", str(context.get("weeks_until_race", 12)))
+            
+            # Target time and pace
+            target_time_seconds = context.get("target_time_seconds", 0)
+            target_time = context.get("target_time", "Non spécifié")
+            target_pace = context.get("target_paces", {}).get("marathon", "N/A")
+            prompt = prompt.replace("{target_time}", str(target_time or "Non spécifié"))
+            prompt = prompt.replace("{target_pace}", str(target_pace))
+            
+            # Fitness metrics
+            prompt = prompt.replace("{ctl}", str(context.get("current_ctl", 0)))
+            prompt = prompt.replace("{atl}", str(context.get("current_atl", 0)))
+            prompt = prompt.replace("{tsb}", str(context.get("current_tsb", 0)))
+            prompt = prompt.replace("{acwr}", str(1.0))  # TODO: get from metrics
+            
+            # Availability constraints
+            available_days_names = context.get("available_days_names", [])
+            prompt = prompt.replace("{available_days}", ", ".join(available_days_names))
+            prompt = prompt.replace("{long_run_day}", context.get("long_run_day_name", "Dimanche"))
+            
+            # User constraints from notes or thread history
+            constraints = context.get("user_notes", "") or "Aucune contrainte spécifique mentionnée."
+            prompt = prompt.replace("{constraints}", constraints)
+            
+        except FileNotFoundError:
             # Use inline prompt if file not found
             prompt = self._get_inline_prompt(context)
         
@@ -309,7 +350,7 @@ class PlanGeneratorService:
             result = await self.llm_service.provider.complete_json(
                 prompt, 
                 model="pro",
-                temperature=0.3
+                temperature=0.4,
             )
             return result
         except Exception as e:

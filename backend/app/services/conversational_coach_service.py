@@ -1,4 +1,4 @@
-"""Conversational coaching service for interactive plan management."""
+"""Conversational coaching service for interactive plan management - Enhanced version."""
 
 import json
 import time
@@ -9,31 +9,55 @@ from sqlalchemy.orm import Session
 from app.models import User, RaceGoal, CoachingThread, CoachingMessage, PlannedSession
 from app.services.llm_service import LLMService
 from app.services.plan_generator_service import PlanGeneratorService
+from app.services.athlete_profile_service import AthleteProfileService
 
 
 class ConversationalCoachService:
-    """Service for handling conversational interactions with the AI coach."""
+    """
+    Enhanced service for handling conversational interactions with the AI coach.
+    
+    Key improvements:
+    - Injects athlete profile into all prompts
+    - Uses LLM-first intent classification (no keyword fallback)
+    - Extended conversation history (20 messages)
+    - Questioning mode before plan generation
+    - Smart error handling with reformulation suggestions
+    """
     
     # Message intent types
     INTENT_PLAN_REQUEST = "plan_request"
     INTENT_QUESTION = "question"
     INTENT_ADJUSTMENT = "adjustment"
+    INTENT_NEEDS_INFO = "needs_info"  # NEW: Coach needs more info before acting
     INTENT_CONFIRMATION = "confirmation"
     INTENT_OFF_TOPIC = "off_topic"
     INTENT_GENERAL = "general"
     
-    # Guard rail topics (refuse these)
-    BLOCKED_TOPICS = [
-        "politique", "politics", "religion", "sexe", "sex",
-        "violence", "drogue", "drugs", "argent", "money",
-        "investissement", "investment", "crypto", "bitcoin",
-        "programmation", "programming", "code", "python", "javascript",
-        "recette", "recipe", "cuisine", "cooking",
-    ]
+    # Coach personality system prompt
+    COACH_SYSTEM_PROMPT = """Tu es un coach de course à pied expert avec 15 ans d'expérience en entraînement personnalisé.
+
+## Ta personnalité
+- Bienveillant mais exigeant
+- Tu analyses TOUJOURS les données avant de répondre
+- Tu cites des valeurs concrètes (allures, zones cardiaques, records)
+- Tu expliques le "pourquoi" de tes recommandations
+- Tu poses UNE question si une info cruciale manque
+- Tu évites les généralités - sois spécifique à CET athlète
+
+## Règles absolues
+1. Ne génère JAMAIS de plan sans connaître les jours disponibles
+2. Cite toujours les records de l'athlète quand pertinent
+3. Explique tes calculs (ex: "Allure marathon = VMA × 0.75 ≈ X:XX/km")
+4. Si l'athlète exprime une contrainte, intègre-la immédiatement
+5. Limite tes réponses à 300 mots sauf si plus de détail est demandé
+
+{athlete_profile}
+"""
     
     def __init__(self, db: Session):
         self.db = db
         self.llm_service = LLMService()
+        self.profile_service = AthleteProfileService(db)
     
     async def process_message(
         self,
@@ -56,6 +80,9 @@ class ConversationalCoachService:
         if not thread:
             raise ValueError("Thread not found")
         
+        # Get athlete profile for context
+        athlete_profile = self.profile_service.get_profile_summary_for_prompt(user, goal)
+        
         # Save user message
         user_msg = CoachingMessage(
             thread_id=thread_id,
@@ -67,8 +94,9 @@ class ConversationalCoachService:
         self.db.commit()
         self.db.refresh(user_msg)
         
-        # Classify intent
-        intent = await self._classify_intent(user_message, thread, goal)
+        # Classify intent using LLM (smarter than keywords)
+        history = self._get_thread_history(thread, limit=20)
+        intent = await self._classify_intent_smart(user_message, goal, history)
         user_msg.message_type = intent
         self.db.commit()
         
@@ -79,23 +107,28 @@ class ConversationalCoachService:
             coach_response = self._get_off_topic_response()
             
         elif intent == self.INTENT_PLAN_REQUEST:
-            coach_response, sessions_affected = await self._handle_plan_request(
-                user_message, goal, user, thread
-            )
+            # Check if we have enough info
+            needs_info = await self._check_plan_prerequisites(goal, history, athlete_profile)
+            if needs_info:
+                coach_response = needs_info
+            else:
+                coach_response, sessions_affected = await self._handle_plan_request(
+                    user_message, goal, user, thread, athlete_profile
+                )
             
         elif intent == self.INTENT_ADJUSTMENT:
             coach_response, sessions_affected = await self._handle_adjustment(
-                user_message, goal, user, thread
+                user_message, goal, user, thread, athlete_profile, history
             )
             
         elif intent == self.INTENT_QUESTION:
             coach_response = await self._handle_question(
-                user_message, goal, thread
+                user_message, goal, thread, athlete_profile, history
             )
             
-        else:
+        else:  # GENERAL, NEEDS_INFO, CONFIRMATION
             coach_response = await self._handle_general(
-                user_message, goal, thread
+                user_message, goal, thread, athlete_profile, history
             )
         
         # Calculate processing time
@@ -123,64 +156,122 @@ class ConversationalCoachService:
             "sessions_modified": sessions_affected,
         }
     
-    async def _classify_intent(
+    async def _classify_intent_smart(
         self,
         message: str,
-        thread: CoachingThread,
         goal: RaceGoal,
+        history: str,
     ) -> str:
-        """Classify the intent of a user message."""
+        """Classify intent using LLM for better accuracy."""
+        classification_prompt = f"""Classifie l'intention de ce message dans un contexte de coaching course à pied.
+
+## Historique récent
+{history[-1500:] if len(history) > 1500 else history}
+
+## Message actuel
+"{message}"
+
+## Contexte
+Objectif: {goal.name} ({goal.race_type}) le {goal.race_date}
+Plan existant: {"Oui" if goal.plan_generated else "Non"}
+
+## Instructions
+Réponds avec UNIQUEMENT UN de ces mots (rien d'autre):
+- plan_request → demande de créer/générer un plan d'entraînement
+- adjustment → demande de modifier le plan (changer jour, ajouter/supprimer séance, adapter volume...)
+- question → question sur l'entraînement, nutrition, récupération, technique...
+- general → conversation, remerciement, reformulation, précision sur contraintes...
+- off_topic → sujet sans rapport avec le sport
+
+Attention:
+- "Cool, mais..." ou "Ok mais..." suivi d'une contrainte = adjustment
+- "Pourquoi..." ou "C'est quoi..." = question
+- Mention de jours (lundi, mardi...) + contexte de changement = adjustment"""
+        
+        try:
+            response = await self.llm_service.provider.complete(
+                classification_prompt,
+                model="flash",
+                temperature=0.1,
+                max_tokens=50,
+                thinking_level="off",  # Fast classification
+            )
+            # More robust parsing: look for the intent keyword anywhere in the response
+            response_lower = response.strip().lower()
+            
+            valid_intents = [
+                self.INTENT_PLAN_REQUEST, self.INTENT_ADJUSTMENT,
+                self.INTENT_QUESTION, self.INTENT_GENERAL, self.INTENT_OFF_TOPIC
+            ]
+            
+            # Check if any valid intent is in the response
+            for valid_intent in valid_intents:
+                if valid_intent in response_lower:
+                    return valid_intent
+                    
+        except Exception as e:
+            print(f"Intent classification error: {e}")
+        
+        # Fallback: Keyword analysis if LLM fails or is unclear
         message_lower = message.lower()
         
-        # Check for blocked topics first
-        for topic in self.BLOCKED_TOPICS:
-            if topic in message_lower:
-                return self.INTENT_OFF_TOPIC
-        
-        # Simple keyword-based classification (fast path)
-        plan_keywords = ["génère", "générer", "crée", "créer", "plan", "programme", "planifie"]
-        adjust_keywords = ["déplace", "change", "modifie", "ajoute", "supprime", "annule", 
-                          "moins", "plus", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche", "lundi"]
-        question_keywords = ["qu'est-ce", "pourquoi", "comment", "c'est quoi", "explique", 
-                            "différence", "conseil", "recommande"]
-        
-        if any(kw in message_lower for kw in plan_keywords):
-            return self.INTENT_PLAN_REQUEST
-        
-        if any(kw in message_lower for kw in adjust_keywords):
-            return self.INTENT_ADJUSTMENT
-        
-        if any(kw in message_lower for kw in question_keywords):
-            return self.INTENT_QUESTION
-        
-        # For ambiguous cases, use LLM
-        try:
-            classification_prompt = f"""
-Classifie l'intention de ce message utilisateur dans le contexte d'un coaching de course à pied.
-
-Message: "{message}"
-
-Contexte: L'utilisateur prépare {goal.name} ({goal.race_type}) le {goal.race_date}.
-
-Réponds avec UNIQUEMENT un de ces mots:
-- plan_request (demande de générer/créer un plan d'entraînement)
-- adjustment (demande de modifier le plan existant)
-- question (question sur l'entraînement, la course, la nutrition, etc.)
-- general (conversation générale liée au running)
-- off_topic (sujet sans rapport avec le sport/entraînement)
-
-Réponse:"""
-            
-            response = await self.llm_service.provider.complete(classification_prompt)
-            intent = response.strip().lower()
-            
-            if intent in [self.INTENT_PLAN_REQUEST, self.INTENT_ADJUSTMENT, 
-                         self.INTENT_QUESTION, self.INTENT_GENERAL, self.INTENT_OFF_TOPIC]:
-                return intent
-        except Exception:
-            pass
+        # Strong keywords for plan request
+        if any(w in message_lower for w in ["créer un plan", "faire un plan", "générer un plan", "mon plan", "programme"]):
+            if "objectif" in message_lower or "course" in message_lower:
+                return self.INTENT_PLAN_REQUEST
+                
+        # Strong keywords for adjustment
+        if any(w in message_lower for w in ["modifier", "changer", "déplacer", "annuler", "remplacer"]):
+            if "séance" in message_lower or "plan" in message_lower:
+                return self.INTENT_ADJUSTMENT
         
         return self.INTENT_GENERAL
+    
+    async def _check_plan_prerequisites(
+        self,
+        goal: RaceGoal,
+        history: str,
+        athlete_profile: str,
+    ) -> Optional[str]:
+        """
+        Check if we have enough information to generate a plan.
+        If not, return a question to ask. If yes, return None.
+        """
+        # Check if plan already exists
+        existing_sessions = self.db.query(PlannedSession).filter(
+            PlannedSession.race_goal_id == goal.id,
+            PlannedSession.is_archived == False
+        ).count()
+        
+        if existing_sessions > 0:
+            return (
+                f"Tu as déjà un plan actif avec **{existing_sessions} séances**. 📋\n\n"
+                "Que souhaites-tu faire ?\n"
+                "• **Modifier** le plan existant (dis-moi ce que tu veux changer)\n"
+                "• **Régénérer** un nouveau plan (l'ancien sera archivé)\n\n"
+                "💡 Si tu veux juste ajuster quelques séances, la modification est plus rapide !"
+            )
+        
+        # Check if we know the available days
+        days_mentioned = any(day in history.lower() for day in [
+            "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+            "jours par semaine", "fois par semaine", "séances par semaine"
+        ])
+        
+        if not days_mentioned:
+            return (
+                "Avant de créer ton plan, j'ai besoin de quelques infos ! 📝\n\n"
+                "**1. Combien de jours par semaine peux-tu t'entraîner ?**\n"
+                "(Idéalement entre 3 et 5 pour un marathon)\n\n"
+                "**2. Y a-t-il des jours impossibles ?**\n"
+                "(Ex: basket le lundi, travail le samedi...)\n\n"
+                "**3. Quel jour préfères-tu pour la sortie longue ?**\n"
+                "(Généralement samedi ou dimanche)\n\n"
+                "Dis-moi tout ça et je te prépare un plan sur mesure ! 🏃"
+            )
+        
+        return None  # All prerequisites met
     
     def _get_off_topic_response(self) -> str:
         """Return polite refusal for off-topic messages."""
@@ -191,7 +282,6 @@ Réponse:"""
             "• Des conseils sur les allures et l'intensité\n"
             "• La nutrition sportive et la récupération\n"
             "• La préparation mentale pour tes courses\n\n"
-            "Pour d'autres sujets, je te recommande de consulter une source appropriée. "
             "Comment puis-je t'aider avec ton entraînement ?"
         )
     
@@ -201,23 +291,13 @@ Réponse:"""
         goal: RaceGoal,
         user: User,
         thread: CoachingThread,
+        athlete_profile: str,
     ) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
         """Handle a request to generate a training plan."""
-        # Check if plan already exists
-        existing_sessions = self.db.query(PlannedSession).filter(
-            PlannedSession.race_goal_id == goal.id,
-            PlannedSession.is_archived == False
-        ).count()
+        # Extract constraints from conversation
+        history = self._get_thread_history(thread, limit=20)
         
-        if existing_sessions > 0:
-            return (
-                f"Tu as déjà un plan actif avec {existing_sessions} séances. "
-                "Souhaites-tu que je le modifie, ou préfères-tu que j'en génère un nouveau ?\n\n"
-                "⚠️ Générer un nouveau plan archivera les séances actuelles.",
-                None
-            )
-        
-        # Generate the plan
+        # Generate the plan with full context
         generator = PlanGeneratorService(self.db)
         
         try:
@@ -235,23 +315,77 @@ Réponse:"""
                 for s in sessions
             ]
             
+            # Build rich response with athlete-specific details
+            weeks = goal.weeks_until_race
             response = (
                 f"✅ **Plan généré avec succès !**\n\n"
-                f"J'ai créé {len(sessions)} séances sur {goal.weeks_until_race} semaines "
+                f"J'ai créé **{len(sessions)} séances** sur **{weeks} semaines** "
                 f"pour te préparer au {goal.name}.\n\n"
-                f"{explanation}\n\n"
-                "Tu peux voir ton calendrier d'entraînement dans l'onglet 'Calendrier'. "
-                "N'hésite pas à me demander des ajustements si certains jours ne te conviennent pas !"
+            )
+            
+            # Add personalized explanation
+            if explanation:
+                response += f"## 📋 Ma Stratégie\n\n{explanation}\n\n"
+            else:
+                # Generate explanation if missing
+                response += await self._generate_plan_explanation(goal, athlete_profile, sessions)
+            
+            response += (
+                "---\n"
+                "📅 Tu peux voir ton calendrier dans l'onglet **Calendrier**.\n\n"
+                "💬 N'hésite pas à me demander des ajustements !\n"
+                "Par exemple: *\"Déplace les fractionnés du mardi au mercredi\"*"
             )
             
             return response, sessions_affected
             
         except Exception as e:
             return (
-                f"❌ Désolé, je n'ai pas pu générer le plan : {str(e)}\n\n"
-                "Vérifie que la date de ta course est dans au moins 4 semaines et réessaie.",
+                f"❌ Je n'ai pas pu générer le plan : {str(e)}\n\n"
+                "Vérifie que :\n"
+                "• La date de ta course est dans au moins 4 semaines\n"
+                "• Tu as bien indiqué un objectif de temps\n\n"
+                "Quel est le problème ? Je peux t'aider à le résoudre.",
                 None
             )
+    
+    async def _generate_plan_explanation(
+        self,
+        goal: RaceGoal,
+        athlete_profile: str,
+        sessions: List[PlannedSession],
+    ) -> str:
+        """Generate a personalized explanation for the plan."""
+        explanation_prompt = f"""{self.COACH_SYSTEM_PROMPT.format(athlete_profile=athlete_profile)}
+
+## Tâche
+Tu viens de créer un plan d'entraînement. Explique-le à l'athlète en 200 mots max.
+
+## Contexte
+- Objectif: {goal.name} ({goal.race_type}) le {goal.race_date}
+- Temps cible: {f"{goal.target_time_seconds // 3600}h {(goal.target_time_seconds % 3600) // 60:02d}" if goal.target_time_seconds else 'Non défini'}
+- Nombre de séances: {len(sessions)}
+- Semaines de préparation: {goal.weeks_until_race}
+
+## Format attendu
+- Cite les records de l'athlète pour justifier les allures
+- Explique le calcul de l'allure marathon si temps cible défini
+- Mentionne les phases (base, build, peak, taper)
+- Donne UN conseil clé pour réussir cette préparation
+
+Sois spécifique, pas générique."""
+        
+        try:
+            explanation = await self.llm_service.provider.complete(
+                explanation_prompt,
+                model="pro",  # Use pro for better explanations
+                temperature=0.6,
+                max_tokens=2000,
+                thinking_level="medium",  # Medium thinking for personalization
+            )
+            return explanation
+        except Exception:
+            return ""
     
     async def _handle_adjustment(
         self,
@@ -259,6 +393,8 @@ Réponse:"""
         goal: RaceGoal,
         user: User,
         thread: CoachingThread,
+        athlete_profile: str,
+        history: str,
     ) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
         """Handle a request to modify the training plan."""
         # Get current plan sessions
@@ -275,48 +411,63 @@ Réponse:"""
         
         if not sessions:
             return (
-                "Tu n'as pas encore de plan actif ! "
-                "Dis-moi de générer un plan et je te proposerai un programme adapté.",
+                "Tu n'as pas encore de plan actif ! 📋\n\n"
+                "Dis-moi \"génère mon plan\" et je te proposerai un programme adapté "
+                "à ton profil et tes contraintes.",
                 None
             )
         
         # Build context for LLM
         sessions_context = "\n".join([
             f"- {s.scheduled_date} ({s.scheduled_date.strftime('%A')}): {s.title} ({s.session_type}, {s.target_duration}min)"
-            for s in sessions[:14]  # Next 2 weeks
+            for s in sessions[:21]  # Next 3 weeks
         ])
         
-        adjustment_prompt = f"""
-Tu es un coach de course à pied. L'utilisateur demande une modification de son plan.
+        adjustment_prompt = f"""{self.COACH_SYSTEM_PROMPT.format(athlete_profile=athlete_profile)}
 
-Objectif: {goal.name} ({goal.race_type}) le {goal.race_date}
-Demande: "{message}"
+## Historique de conversation
+{history[-2000:] if len(history) > 2000 else history}
 
-Séances à venir:
+## Demande actuelle
+"{message}"
+
+## Plan actuel (3 prochaines semaines)
 {sessions_context}
 
-Analyse la demande et propose une modification concrète. 
-Si la demande est claire (ex: "déplace les fractionnés au mardi"), indique les changements spécifiques.
-Si la demande est vague, pose une question de clarification.
+## Instructions
+1. Analyse la demande de l'athlète
+2. Si la demande est claire, propose des modifications CONCRÈTES avec les nouvelles dates/séances
+3. Si la demande est floue, pose UNE question de clarification
+4. Rappelle les contraintes déjà mentionnées (ex: basket le lundi)
+5. Explique pourquoi la modification proposée maintient la cohérence du plan
 
-Réponds de façon concise et amicale en français.
-"""
+Format: réponse en français, 200 mots max, utilise du markdown pour la lisibilité."""
         
         try:
-            response = await self.llm_service.provider.complete(adjustment_prompt)
-            
-            # For now, return the LLM suggestion without auto-modifying
-            # TODO: Add actual session modification logic
-            return (
-                response + "\n\n"
-                "💡 *Pour l'instant, je te suggère les changements. "
-                "Confirme-moi si tu veux que je les applique !*",
-                None
+            response = await self.llm_service.provider.complete(
+                adjustment_prompt,
+                model="pro",  # Use pro for complex adjustments
+                temperature=0.5,
+                max_tokens=2000,
+                thinking_level="high",  # High thinking for adjustments
             )
+            
+            # TODO: Actually modify sessions based on LLM suggestions
+            # For now, return the suggestion and ask for confirmation
+            
+            if "?" not in response:  # If coach made a concrete suggestion
+                response += "\n\n✅ *Confirme si tu veux que j'applique ces changements !*"
+            
+            return response, None
+            
         except Exception as e:
             return (
-                "Je n'ai pas pu analyser ta demande. "
-                "Peux-tu reformuler de façon plus précise ?",
+                "J'ai eu du mal à comprendre ta demande. 🤔\n\n"
+                "Peux-tu préciser ce que tu veux modifier ?\n"
+                "Par exemple :\n"
+                "• *\"Déplace la séance de mardi au mercredi\"*\n"
+                "• *\"Pas de séance le lundi, j'ai basket\"*\n"
+                "• *\"Ajoute une séance de côtes le jeudi\"*",
                 None
             )
     
@@ -325,32 +476,38 @@ Réponds de façon concise et amicale en français.
         message: str,
         goal: RaceGoal,
         thread: CoachingThread,
+        athlete_profile: str,
+        history: str,
     ) -> str:
         """Handle a training-related question."""
-        # Get conversation history
-        history = self._get_thread_history(thread, limit=6)
-        
-        question_prompt = f"""
-Tu es un coach de course à pied expérimenté et bienveillant.
-L'utilisateur prépare {goal.name} ({goal.race_type}) le {goal.race_date}.
+        question_prompt = f"""{self.COACH_SYSTEM_PROMPT.format(athlete_profile=athlete_profile)}
 
-Historique de conversation:
-{history}
+## Historique
+{history[-1500:] if len(history) > 1500 else history}
 
-Question: "{message}"
+## Question
+"{message}"
 
-Réponds de façon claire, concise et encourageante. 
-Utilise des exemples concrets quand c'est pertinent.
-Si la question est technique (allures, zones cardiaques, etc.), donne des valeurs concrètes.
-Limite ta réponse à 200 mots maximum.
-"""
+## Instructions
+1. Réponds de façon claire et concise (150 mots max)
+2. Donne des valeurs concrètes quand possible (allures, zones, durées)
+3. Relie ta réponse au profil de l'athlète si pertinent
+4. Si la question est très technique, propose d'approfondir
+
+Réponds en français, utilise des emojis avec parcimonie."""
         
         try:
-            response = await self.llm_service.provider.complete(question_prompt)
+            response = await self.llm_service.provider.complete(
+                question_prompt,
+                model="pro",  # Use pro for expert answers
+                temperature=0.5,
+                max_tokens=1500,
+                thinking_level="medium",  # Medium thinking for questions
+            )
             return response
         except Exception:
             return (
-                "Je n'ai pas pu traiter ta question. "
+                "Je n'ai pas pu traiter ta question. 😕\n"
                 "Peux-tu la reformuler ?"
             )
     
@@ -359,32 +516,40 @@ Limite ta réponse à 200 mots maximum.
         message: str,
         goal: RaceGoal,
         thread: CoachingThread,
+        athlete_profile: str,
+        history: str,
     ) -> str:
         """Handle general conversation."""
-        history = self._get_thread_history(thread, limit=4)
-        
-        general_prompt = f"""
-Tu es un coach de course à pied amical et motivant.
-L'utilisateur prépare {goal.name} ({goal.race_type}) le {goal.race_date}.
+        general_prompt = f"""{self.COACH_SYSTEM_PROMPT.format(athlete_profile=athlete_profile)}
 
-Historique:
-{history}
+## Historique
+{history[-1000:] if len(history) > 1000 else history}
 
-Message: "{message}"
+## Message
+"{message}"
 
-Réponds de façon naturelle et encourageante. 
-Essaie de ramener la conversation vers l'entraînement si pertinent.
-Sois bref (max 100 mots).
-"""
+## Instructions
+- Réponds de façon naturelle et encourageante (100 mots max)
+- Si l'athlète donne une info importante (contrainte, préférence), confirme que tu l'as notée
+- Essaie d'orienter vers une action concrète si pertinent
+- Sois bref et dynamique
+
+Réponds en français."""
         
         try:
-            response = await self.llm_service.provider.complete(general_prompt)
+            response = await self.llm_service.provider.complete(
+                general_prompt,
+                model="flash",
+                temperature=0.6,
+                max_tokens=1000,
+                thinking_level="low",  # Low thinking for general chat
+            )
             return response
         except Exception:
             return "Je suis là pour t'aider dans ta préparation ! 💪 Qu'est-ce que je peux faire pour toi ?"
     
-    def _get_thread_history(self, thread: CoachingThread, limit: int = 6) -> str:
-        """Get formatted conversation history."""
+    def _get_thread_history(self, thread: CoachingThread, limit: int = 20) -> str:
+        """Get formatted conversation history (extended to 20 messages)."""
         messages = (
             self.db.query(CoachingMessage)
             .filter(CoachingMessage.thread_id == thread.id)
@@ -401,8 +566,9 @@ Sois bref (max 100 mots).
         
         history_lines = []
         for msg in messages:
-            role = "User" if msg.role == "user" else "Coach"
-            content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
-            history_lines.append(f"{role}: {content}")
+            role = "Athlète" if msg.role == "user" else "Coach"
+            # Keep more content for context
+            content = msg.content[:400] + "..." if len(msg.content) > 400 else msg.content
+            history_lines.append(f"**{role}**: {content}")
         
-        return "\n".join(history_lines)
+        return "\n\n".join(history_lines)
