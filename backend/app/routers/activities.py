@@ -66,8 +66,7 @@ async def get_personal_records(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Get personal records: Strava career stats + local best efforts."""
-    from datetime import date
+    """Get personal records: Strava career stats + aggregated best efforts."""
     from app.services.strava_service import StravaService
     
     # Fetch Strava career stats
@@ -78,38 +77,68 @@ async def get_personal_records(
     recent_run = strava_stats.get("recent_run_totals", {})
     ytd_run = strava_stats.get("ytd_run_totals", {})
     
-    # Query local DB for best efforts (fastest pace for 5k, 10k, half, marathon)
-    def get_best_for_distance(min_distance, max_distance=None):
-        query = db.query(Activity).filter(
-            Activity.user_id == user.id,
-            Activity.activity_type == "Run",
-            Activity.distance >= min_distance,
-            Activity.moving_time > 0
-        )
-        if max_distance:
-            query = query.filter(Activity.distance < max_distance)
-        
-        activities = query.all()
-        if not activities:
-            return None
-        
-        # Calculate pace (time per km) and find best
-        best = min(activities, key=lambda a: a.moving_time / (a.distance / 1000))
-        pace_s_per_km = best.moving_time / (best.distance / 1000)
-        mins = int(pace_s_per_km // 60)
-        secs = int(pace_s_per_km % 60)
-        return {
-            "time_seconds": best.moving_time,
-            "time_formatted": f"{int(best.moving_time // 3600)}:{int((best.moving_time % 3600) // 60):02d}:{int(best.moving_time % 60):02d}",
-            "pace": f"{mins}:{secs:02d}/km",
-            "date": best.start_date.isoformat() if best.start_date else None,
-            "activity_name": best.name,
-        }
+    # Aggregate best efforts from stored activities
+    # Strava stores best_efforts as: [{name: "5K", elapsed_time: 1256, ...}, ...]
+    activities_with_efforts = db.query(Activity).filter(
+        Activity.user_id == user.id,
+        Activity.best_efforts.isnot(None)
+    ).all()
     
-    best_5k = get_best_for_distance(5000, 10000)
-    best_10k = get_best_for_distance(10000, 21000)
-    best_half = get_best_for_distance(21000, 42000)
-    best_marathon = get_best_for_distance(42000)
+    # Map of distance names to best times found
+    EFFORT_DISTANCES = {
+        "400m": {"target": "400m", "display": "400m"},
+        "1K": {"target": "1K", "display": "1 KM"},
+        "1 mile": {"target": "1 mile", "display": "1 Mile"},
+        "5K": {"target": "5K", "display": "5K"},
+        "10K": {"target": "10K", "display": "10K"},
+        "Half-Marathon": {"target": "Half-Marathon", "display": "Semi"},
+        "Marathon": {"target": "Marathon", "display": "Marathon"},
+    }
+    
+    best_efforts_map = {}
+    
+    for activity in activities_with_efforts:
+        if not activity.best_efforts:
+            continue
+        for effort in activity.best_efforts:
+            name = effort.get("name")
+            if name not in EFFORT_DISTANCES:
+                continue
+            
+            elapsed_time = effort.get("elapsed_time", 0)
+            if elapsed_time <= 0:
+                continue
+            
+            # Check if this is better than current best
+            if name not in best_efforts_map or elapsed_time < best_efforts_map[name]["elapsed_time"]:
+                # Format time
+                hours = int(elapsed_time // 3600)
+                mins = int((elapsed_time % 3600) // 60)
+                secs = int(elapsed_time % 60)
+                if hours > 0:
+                    time_formatted = f"{hours}:{mins:02d}:{secs:02d}"
+                else:
+                    time_formatted = f"{mins}:{secs:02d}"
+                
+                best_efforts_map[name] = {
+                    "elapsed_time": elapsed_time,
+                    "time_formatted": time_formatted,
+                    "date": activity.start_date.isoformat() if activity.start_date else None,
+                    "activity_name": activity.name,
+                    "display_name": EFFORT_DISTANCES[name]["display"],
+                }
+    
+    # Build response for specific distances
+    def get_effort(name):
+        if name in best_efforts_map:
+            e = best_efforts_map[name]
+            return {
+                "time_seconds": e["elapsed_time"],
+                "time_formatted": e["time_formatted"],
+                "date": e["date"],
+                "activity_name": e["activity_name"],
+            }
+        return None
     
     return {
         "career": {
@@ -128,10 +157,10 @@ async def get_personal_records(
             "km": round(recent_run.get("distance", 0) / 1000, 1),
         },
         "best_efforts": {
-            "5k": best_5k,
-            "10k": best_10k,
-            "half_marathon": best_half,
-            "marathon": best_marathon,
+            "5k": get_effort("5K"),
+            "10k": get_effort("10K"),
+            "half_marathon": get_effort("Half-Marathon"),
+            "marathon": get_effort("Marathon"),
         }
     }
 

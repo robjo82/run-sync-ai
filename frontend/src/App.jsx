@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Link, Target, BarChart3, Plus, LogIn, LogOut, User } from 'lucide-react';
+import { RefreshCw, Link, Target, BarChart3, Plus, LogIn, LogOut, User, Archive, Calendar, Trash2 } from 'lucide-react';
 import api from './services/api';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { FitnessChart, AcwrGauge } from './components/FitnessChart';
@@ -11,12 +11,13 @@ import { TrainingCalendar } from './components/TrainingCalendar';
 import { LandingPage } from './pages/LandingPage';
 import AuthModal from './components/AuthModal';
 import RecordsCard from './components/RecordsCard';
+import UnifiedActivitiesCard from './components/UnifiedActivitiesCard';
+import FloatingCoach from './components/FloatingCoach';
 
 function AppContent() {
     const { user, isAuthenticated, logout } = useAuth();
 
     // State
-    const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'goals'
     const [showAuthModal, setShowAuthModal] = useState(false);
     const [showGoalForm, setShowGoalForm] = useState(false);
     const [selectedGoalId, setSelectedGoalId] = useState(null);
@@ -47,17 +48,11 @@ function AppContent() {
     useEffect(() => {
         if (isAuthenticated) {
             loadDashboardData();
+            loadGoals(); // Load goals on mount too
         } else {
-            // Reset critical data when not authenticated (though component will likely unmount)
             setData({ ...data, activities: [], fitnessHistory: null, stats: null });
         }
     }, [isAuthenticated]);
-
-    useEffect(() => {
-        if (activeTab === 'goals') {
-            loadGoals();
-        }
-    }, [activeTab]);
 
     const loadDashboardData = async (options = {}) => {
         const { refreshStatsOnly = false } = options;
@@ -165,10 +160,45 @@ function AppContent() {
         console.log('Applying adjustment:', adjustment);
     };
 
+    // State for coach auto-message
+    const [coachAutoMessage, setCoachAutoMessage] = useState(null);
+
     const handleGoalCreated = (goal) => {
         setShowGoalForm(false);
         loadGoals();
         setSelectedGoalId(goal.id);
+
+        // Trigger auto-message to coach with full context
+        const autoMsg = `Bonjour Coach ! Je viens de créer un nouvel objectif : 
+- **Nom** : ${goal.name}
+- **Course** : ${goal.race_type} le ${new Date(goal.race_date).toLocaleDateString('fr-FR')}
+- **Objectif temps** : ${goal.target_time || 'Non spécifié'}
+
+Peux-tu m'aider à créer un plan d'entraînement adapté à mon profil et mon historique d'activités ?`;
+        setCoachAutoMessage(autoMsg);
+    };
+
+    // State for archive confirmation
+    const [archiveConfirmGoalId, setArchiveConfirmGoalId] = useState(null);
+
+    const handleGoalArchive = (goalId) => {
+        // Show confirmation modal instead of browser dialog
+        setArchiveConfirmGoalId(goalId);
+    };
+
+    const confirmArchive = async () => {
+        const goalId = archiveConfirmGoalId;
+        setArchiveConfirmGoalId(null);
+        try {
+            await api.deleteGoal(goalId);
+            if (selectedGoalId === goalId) {
+                setSelectedGoalId(null);
+            }
+            await loadGoals();
+        } catch (err) {
+            console.error('Error archiving goal:', err);
+            alert("Erreur lors de l'archivage");
+        }
     };
 
     if (!isAuthenticated) {
@@ -206,24 +236,6 @@ function AppContent() {
                     </svg>
                     <span className="logo-text">Run Sync AI</span>
                 </div>
-
-                {/* Navigation Tabs */}
-                <nav className="nav-tabs">
-                    <button
-                        className={`nav-tab ${activeTab === 'dashboard' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('dashboard')}
-                    >
-                        <BarChart3 size={16} />
-                        Dashboard
-                    </button>
-                    <button
-                        className={`nav-tab ${activeTab === 'goals' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('goals')}
-                    >
-                        <Target size={16} />
-                        Objectifs
-                    </button>
-                </nav>
 
                 <div style={{ display: 'flex', gap: 'var(--space-md)', alignItems: 'center' }}>
                     {data.authStatus?.strava_connected ? (
@@ -269,128 +281,75 @@ function AppContent() {
                 </div>
             )}
 
-            {/* Dashboard View */}
-            {activeTab === 'dashboard' && (
-                <>
-                    <section style={{ marginBottom: 'var(--space-xl)' }}>
-                        <ActivityStats stats={data.stats} loading={loading.stats} />
-                    </section>
+            {/* Unified View */}
+            <>
+                <section style={{ marginBottom: 'var(--space-xl)' }}>
+                    <ActivityStats stats={data.stats} loading={loading.stats} />
+                </section>
 
-                    <div className="dashboard-grid">
-                        <div className="dashboard-main" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
-                            <FitnessChart data={data.fitnessHistory} loading={loading.fitness} />
-                            <ActivityList
-                                activities={data.activities}
-                                loading={loading.activities}
-                                onClassify={() => loadDashboardData({ refreshStatsOnly: true })}
-                            />
-                        </div>
-
-                        <div className="dashboard-sidebar">
-                            {data.acwrStatus && (
-                                <AcwrGauge
-                                    acwr={data.acwrStatus.acwr}
-                                    status={data.acwrStatus.status}
-                                    zone={data.acwrStatus.zone}
-                                    message={data.acwrStatus.message}
-                                />
-                            )}
-                            <CoachingPanel
-                                recommendation={data.recommendation}
-                                loading={loading.recommendation}
-                                onApplyAdjustment={handleApplyAdjustment}
-                            />
-                            <DailyCheckin onSubmit={handleCheckinSubmit} loading={false} />
-                            <RecordsCard />
-                        </div>
-                    </div>
-                </>
-            )}
-
-            {/* Goals View */}
-            {activeTab === 'goals' && (
-                <div className="goals-view">
-                    <div className="goals-header" style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: 'var(--space-lg)'
-                    }}>
-                        <h2 style={{ margin: 0 }}>
-                            <Target size={24} style={{ verticalAlign: 'middle', marginRight: 'var(--space-sm)' }} />
-                            Mes Objectifs
-                        </h2>
-                        <button
-                            className="btn btn-primary"
-                            onClick={() => setShowGoalForm(!showGoalForm)}
-                        >
-                            <Plus size={16} />
-                            Nouvel objectif
-                        </button>
+                <div className="dashboard-grid">
+                    <div className="dashboard-main" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
+                        <FitnessChart data={data.fitnessHistory} loading={loading.fitness} />
+                        <UnifiedActivitiesCard
+                            activities={data.activities}
+                            goalId={selectedGoalId}
+                            loading={loading.activities}
+                            onClassify={() => loadDashboardData({ refreshStatsOnly: true })}
+                        />
                     </div>
 
-                    <div className="dashboard-grid">
-                        <div className="dashboard-main" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
-                            {/* Goal Form */}
+                    <div className="dashboard-sidebar">
+                        {data.acwrStatus && (
+                            <AcwrGauge
+                                acwr={data.acwrStatus.acwr}
+                                status={data.acwrStatus.status}
+                                zone={data.acwrStatus.zone}
+                                message={data.acwrStatus.message}
+                            />
+                        )}
+
+                        {/* Goals Card */}
+                        <div className="card">
+                            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <h3 className="card-title" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
+                                    <Target size={18} /> Objectifs
+                                </h3>
+                                <button className="btn btn-sm" onClick={() => setShowGoalForm(!showGoalForm)} style={{ padding: '4px 8px' }}>
+                                    <Plus size={14} />
+                                </button>
+                            </div>
+
                             {showGoalForm && (
-                                <RaceGoalForm
-                                    onGoalCreated={handleGoalCreated}
-                                    onCancel={() => setShowGoalForm(false)}
-                                />
-                            )}
-
-                            {/* Training Calendar */}
-                            {selectedGoalId && !showGoalForm && (
-                                <TrainingCalendar
-                                    goalId={selectedGoalId}
-                                    onSessionClick={(session) => console.log('Session clicked:', session)}
-                                    onGoalArchived={() => {
-                                        loadGoals();
-                                        setSelectedGoalId(null); // Reset selection to avoid showing archived goal
-                                    }}
-                                />
-                            )}
-
-                            {/* No goals message */}
-                            {goals.length === 0 && !showGoalForm && !loading.goals && (
-                                <div className="card" style={{ textAlign: 'center', padding: 'var(--space-2xl)' }}>
-                                    <Target size={48} style={{ color: 'var(--color-text-muted)', marginBottom: 'var(--space-md)' }} />
-                                    <h3>Aucun objectif défini</h3>
-                                    <p style={{ color: 'var(--color-text-muted)', marginBottom: 'var(--space-lg)' }}>
-                                        Créez votre premier objectif pour générer un plan d'entraînement personnalisé
-                                    </p>
-                                    <button
-                                        className="btn btn-primary"
-                                        onClick={() => setShowGoalForm(true)}
-                                    >
-                                        <Plus size={16} />
-                                        Créer un objectif
-                                    </button>
+                                <div style={{ padding: 'var(--space-md)', borderTop: '1px solid var(--color-border-light)' }}>
+                                    <RaceGoalForm
+                                        onGoalCreated={handleGoalCreated}
+                                        onCancel={() => setShowGoalForm(false)}
+                                    />
                                 </div>
                             )}
-                        </div>
 
-                        {/* Goals Sidebar */}
-                        <div className="dashboard-sidebar">
-                            <div className="card">
-                                <div className="card-header">
-                                    <h3 className="card-title">Objectifs actifs</h3>
-                                </div>
-
-                                {loading.goals ? (
-                                    <p style={{ color: 'var(--color-text-muted)' }}>Chargement...</p>
-                                ) : goals.length === 0 ? (
-                                    <p style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
-                                        Aucun objectif
-                                    </p>
-                                ) : (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
-                                        {goals.map(goal => (
+                            {loading.goals ? (
+                                <p style={{ padding: 'var(--space-md)', color: 'var(--color-text-muted)' }}>Chargement...</p>
+                            ) : goals.length === 0 && !showGoalForm ? (
+                                <p style={{ padding: 'var(--space-md)', color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
+                                    Aucun objectif. Cliquez + pour créer.
+                                </p>
+                            ) : !showGoalForm && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-xs)', padding: 'var(--space-sm)' }}>
+                                    {goals.map(goal => (
+                                        <div
+                                            key={goal.id}
+                                            style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 'var(--space-xs)',
+                                            }}
+                                        >
                                             <button
-                                                key={goal.id}
-                                                onClick={() => { setSelectedGoalId(goal.id); setShowGoalForm(false); }}
+                                                onClick={() => setSelectedGoalId(goal.id)}
                                                 style={{
-                                                    padding: 'var(--space-md)',
+                                                    flex: 1,
+                                                    padding: 'var(--space-sm)',
                                                     background: selectedGoalId === goal.id
                                                         ? 'var(--color-primary)'
                                                         : 'var(--color-bg-glass)',
@@ -398,28 +357,101 @@ function AppContent() {
                                                     borderColor: selectedGoalId === goal.id
                                                         ? 'var(--color-primary)'
                                                         : 'var(--color-border-light)',
-                                                    borderRadius: 'var(--radius-md)',
+                                                    borderRadius: 'var(--radius-sm)',
                                                     cursor: 'pointer',
                                                     textAlign: 'left',
                                                     color: 'var(--color-text-primary)',
                                                 }}
                                             >
-                                                <div style={{ fontWeight: 600, marginBottom: '2px' }}>
-                                                    {goal.name}
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{ fontWeight: 500, fontSize: '0.875rem' }}>
+                                                        {goal.name}
+                                                    </span>
+                                                    {goal.plan_generated && (
+                                                        <Calendar size={12} style={{ color: selectedGoalId === goal.id ? 'rgba(255,255,255,0.8)' : 'var(--color-success)' }} title="Plan généré" />
+                                                    )}
                                                 </div>
-                                                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                                                <div style={{ fontSize: '0.7rem', color: selectedGoalId === goal.id ? 'rgba(255,255,255,0.7)' : 'var(--color-text-muted)' }}>
                                                     {goal.race_type.toUpperCase()} • {new Date(goal.race_date).toLocaleDateString('fr-FR')}
                                                 </div>
-                                                {goal.plan_generated && (
-                                                    <span className="badge badge-success" style={{ marginTop: 'var(--space-xs)' }}>
-                                                        Plan généré
-                                                    </span>
-                                                )}
                                             </button>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleGoalArchive(goal.id);
+                                                }}
+                                                className="btn btn-icon"
+                                                style={{
+                                                    padding: '6px',
+                                                    background: 'transparent',
+                                                    border: 'none',
+                                                    color: 'var(--color-text-muted)',
+                                                    cursor: 'pointer',
+                                                }}
+                                                title="Archiver l'objectif"
+                                            >
+                                                <Archive size={14} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <CoachingPanel
+                            recommendation={data.recommendation}
+                            loading={loading.recommendation}
+                            onApplyAdjustment={handleApplyAdjustment}
+                        />
+                        <DailyCheckin onSubmit={handleCheckinSubmit} loading={false} />
+                        <RecordsCard />
+                    </div>
+                </div>
+            </>
+
+            {/* Archive Confirmation Modal */}
+            {archiveConfirmGoalId && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.7)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000,
+                }}>
+                    <div style={{
+                        background: '#1e1e2f',
+                        borderRadius: 'var(--radius-lg)',
+                        padding: 'var(--space-lg)',
+                        maxWidth: '400px',
+                        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                    }}>
+                        <h3 style={{ marginBottom: 'var(--space-md)', color: 'var(--color-text)' }}>
+                            Archiver l'objectif ?
+                        </h3>
+                        <p style={{ marginBottom: 'var(--space-lg)', color: 'var(--color-text-muted)' }}>
+                            Les séances associées seront également archivées. Cette action est irréversible.
+                        </p>
+                        <div style={{ display: 'flex', gap: 'var(--space-sm)', justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={() => setArchiveConfirmGoalId(null)}
+                                className="btn"
+                                style={{ background: 'var(--color-bg-glass)' }}
+                            >
+                                Annuler
+                            </button>
+                            <button
+                                onClick={confirmArchive}
+                                className="btn"
+                                style={{ background: 'var(--color-danger)', color: 'white' }}
+                            >
+                                Archiver
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -471,6 +503,15 @@ function AppContent() {
                     color: white;
                 }
             `}</style>
+
+            {/* Floating Coach Button */}
+            <FloatingCoach
+                goals={goals}
+                selectedGoalId={selectedGoalId}
+                onGoalUpdated={loadGoals}
+                autoMessage={coachAutoMessage}
+                onAutoMessageConsumed={() => setCoachAutoMessage(null)}
+            />
         </div>
     );
 }
