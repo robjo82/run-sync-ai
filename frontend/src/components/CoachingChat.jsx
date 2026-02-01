@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { Send, User, Bot, Loader, AlertTriangle, RefreshCw } from 'lucide-react';
 import api from '../services/api';
 
-const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate }) => {
+const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate, initialAutoMessage, onAutoMessageConsumed }) => {
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
     const [loading, setLoading] = useState(false);
@@ -10,42 +11,34 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate }) => {
     const [error, setError] = useState(null);
     const messagesEndRef = useRef(null);
     const textareaRef = useRef(null);
+    const processedAutoMessageRef = useRef(false);
 
-    // Initial load
+    // Auto-Send effect
     useEffect(() => {
-        if (threadId) {
-            loadMessages();
-        } else if (goalId) {
-            // No thread selected, maybe auto-create or show empty state?
-            // For now, checks if there's a default thread or lets user create one via first message
-        }
-    }, [threadId, goalId]);
+        if (initialAutoMessage && !processedAutoMessageRef.current && !loading) {
+            processedAutoMessageRef.current = true;
+            console.log('Auto-sending message:', initialAutoMessage);
 
-    // Auto-scroll to bottom
-    useEffect(() => {
-        if (messagesEndRef.current && !scrolling) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        }
-    }, [messages, loading]);
+            // Trigger send logic
+            const fakeEvent = { preventDefault: () => { } };
+            // Temporarily set new message to auto message so handleSendMessage uses it
+            setNewMessage(initialAutoMessage);
 
-    const loadMessages = async () => {
-        setLoading(true);
-        try {
-            const thread = await api.getThread(threadId);
-            setMessages(thread.messages || []);
-        } catch (err) {
-            console.error('Failed to load thread:', err);
-            setError("Impossible de charger la conversation.");
-        } finally {
-            setLoading(false);
+            // Allow state to update then trigger
+            setTimeout(() => {
+                handleSendMessage(fakeEvent, initialAutoMessage);
+                if (onAutoMessageConsumed) onAutoMessageConsumed();
+            }, 100);
         }
-    };
+    }, [initialAutoMessage]);
 
-    const handleSendMessage = async (e) => {
+    // Update handleSendMessage to accept direct content override
+    const handleSendMessage = async (e, contentOverride = null) => {
         e.preventDefault();
-        if (!newMessage.trim()) return;
+        const content = contentOverride || newMessage.trim();
+        if (!content) return;
 
-        const content = newMessage.trim();
+        // Always clear the input, even if it was an override (because we likely set the input for visual effect before)
         setNewMessage('');
 
         // Reset height
@@ -197,11 +190,21 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate }) => {
                                 borderTopLeftRadius: msg.role === 'user' ? 'var(--radius-md)' : 0,
                                 color: msg.role === 'user' ? 'white' : 'var(--color-text)',
                                 boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                                whiteSpace: 'pre-wrap',
                                 fontSize: '0.95rem',
                                 lineHeight: '1.5',
+                                overflowWrap: 'break-word',
+                                maxWidth: '100%'
                             }}>
-                                {msg.content}
+                                <ReactMarkdown
+                                    components={{
+                                        p: ({ node, ...props }) => <p style={{ margin: '0 0 8px 0' }} {...props} />,
+                                        ul: ({ node, ...props }) => <ul style={{ margin: '0 0 8px 20px', padding: 0 }} {...props} />,
+                                        li: ({ node, ...props }) => <li style={{ margin: '4px 0' }} {...props} />,
+                                        strong: ({ node, ...props }) => <strong style={{ fontWeight: 600 }} {...props} />
+                                    }}
+                                >
+                                    {msg.content}
+                                </ReactMarkdown>
 
                                 {msg.sessions_affected && msg.sessions_affected.length > 0 && (
                                     <div style={{

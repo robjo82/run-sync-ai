@@ -38,9 +38,9 @@ class GeminiProvider(LLMProvider):
     """Google Gemini LLM provider."""
     
     MODELS = {
-        "flash": "gemini-2.0-flash",
-        "pro": "gemini-1.5-pro",
-        "default": "gemini-2.0-flash",
+        "flash": "gemini-3.0-flash",
+        "pro": "gemini-3.0-pro",
+        "default": "gemini-3.0-flash",
     }
     
     def __init__(self):

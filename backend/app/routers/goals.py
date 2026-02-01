@@ -211,8 +211,42 @@ async def generate_plan(
             "weeks": goal.weeks_until_race,
             "explanation": explanation,
         }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Plan generation failed: {str(e)}")
+    finally:
+        # If explanation generated, post it to chat
+        if 'explanation' in locals() and explanation:
+            try:
+                from app.models import CoachingThread, CoachingMessage
+                
+                # Find or create thread
+                thread = db.query(CoachingThread).filter(
+                    CoachingThread.race_goal_id == goal.id,
+                    CoachingThread.is_archived == False
+                ).first()
+                
+                if not thread:
+                    thread = CoachingThread(
+                        race_goal_id=goal.id,
+                        title="Plan d'entraînement",
+                    )
+                    db.add(thread)
+                    db.commit()
+                    db.refresh(thread)
+                
+                # Check if explanation already posted (dedup based on content length or recent)
+                # For now, just post
+                message = CoachingMessage(
+                    thread_id=thread.id,
+                    role="coach",
+                    message_type="explanation",
+                    content=explanation
+                )
+                db.add(message)
+                db.commit()
+            except Exception as e:
+                print(f"Failed to post explanation to chat: {e}")
 
 
 @router.get("/{goal_id}/calendar")

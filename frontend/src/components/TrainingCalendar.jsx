@@ -163,6 +163,39 @@ export function TrainingCalendar({ goalId, onSessionClick, onGoalArchived }) {
         setActiveTab('calendar'); // Switch back to calendar to see changes
     };
 
+    const handleAutoGenerate = () => {
+        if (!goal) return;
+
+        const daysMap = { 1: 'Lundi', 2: 'Mardi', 3: 'Mercredi', 4: 'Jeudi', 5: 'Vendredi', 6: 'Samedi', 7: 'Dimanche' };
+        const daysStr = goal.available_days.split(',').map(d => daysMap[d]).join(', ');
+
+        const formatSeconds = (totalSeconds) => {
+            if (!totalSeconds) return '';
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            return `${hours}h${minutes.toString().padStart(2, '0')}`;
+        };
+
+        const targetTimeStr = goal.target_time_seconds ? formatSeconds(goal.target_time_seconds) : '';
+
+        const prompt = `Génère mon plan d'entraînement pour ${goal.name} (${goal.race_type}). ` +
+            `La course est le ${new Date(goal.race_date).toLocaleDateString('fr-FR')}. ` +
+            (targetTimeStr ? `Mon objectif est de finir en ${targetTimeStr}. ` : '') +
+            `Je suis disponible les : ${daysStr}. ` +
+            `Ma sortie longue est le ${daysMap[goal.long_run_day]}. ` +
+            `Maximum ${goal.max_weekly_hours}h par semaine.`;
+
+        setAutoMessage(prompt);
+        setActiveTab('chat');
+    };
+
+    const [autoMessage, setAutoMessage] = useState(null);
+
+    // Clear auto message after it's passed
+    const handleAutoMessageConsumed = () => {
+        setAutoMessage(null);
+    };
+
     if (loading && !goal) {
         return <div className="p-4 text-center">Chargement...</div>;
     }
@@ -198,264 +231,273 @@ export function TrainingCalendar({ goalId, onSessionClick, onGoalArchived }) {
             </div>
 
             {/* Main Content */}
+            {/* Main Content */}
             <div className="card">
-                {activeTab === 'chat' ? (
+                <div style={{ display: activeTab === 'chat' ? 'block' : 'none' }}>
                     <CoachingChat
                         goalId={goalId}
                         threadId={activeThread?.id}
                         onThreadCreated={handleThreadCreated}
                         onPlanUpdate={handlePlanUpdate}
+                        initialAutoMessage={autoMessage}
+                        onAutoMessageConsumed={handleAutoMessageConsumed}
                     />
-                ) : (
-                    <>
-                        {/* Calendar Navigation */}
+                </div>
+
+                <div style={{ display: activeTab === 'calendar' ? 'block' : 'none' }}>
+                    {/* Calendar Navigation & Headers */}
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: 'var(--space-lg)',
+                        padding: 'var(--space-md)',
+                        borderBottom: '1px solid var(--color-border-light)'
+                    }}>
                         <div style={{
                             display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            marginBottom: 'var(--space-lg)',
-                            padding: 'var(--space-md)',
-                            borderBottom: '1px solid var(--color-border-light)'
+                            gap: 'var(--space-md)',
+                            alignItems: 'center'
                         }}>
-                            <div style={{
-                                display: 'flex',
-                                gap: 'var(--space-md)',
-                                alignItems: 'center'
-                            }}>
-                                <div style={{ fontWeight: 600 }}>
-                                    {goal?.name}
-                                </div>
-                                {!goal?.plan_generated && (
-                                    <span className="badge badge-warning">Plan non généré</span>
-                                )}
+                            <div style={{ fontWeight: 600 }}>
+                                {goal?.name}
                             </div>
-
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                gap: 'var(--space-sm)'
-                            }}>
+                            {!goal?.plan_generated && (
                                 <button
-                                    className="btn btn-secondary"
-                                    onClick={() => navigateMonth(-1)}
-                                    style={{ padding: 'var(--space-xs)' }}
+                                    className="btn btn-primary btn-sm"
+                                    onClick={handleAutoGenerate}
+                                    style={{ fontSize: '0.8rem', padding: 'var(--space-xs) var(--space-sm)' }}
                                 >
-                                    <ChevronLeft size={20} />
+                                    ✨ Générer le plan
                                 </button>
-                                <h4 style={{ margin: 0, minWidth: '140px', textAlign: 'center' }}>
-                                    {currentMonth.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
-                                </h4>
-                                <button
-                                    className="btn btn-secondary"
-                                    onClick={() => navigateMonth(1)}
-                                    style={{ padding: 'var(--space-xs)' }}
-                                >
-                                    <ChevronRight size={20} />
-                                </button>
-                            </div>
+                            )}
                         </div>
 
-                        {/* Calendar Grid */}
                         <div style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(7, 1fr)',
-                            gap: '2px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 'var(--space-sm)'
                         }}>
-                            {/* Day headers */}
-                            {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(day => (
-                                <div key={day} style={{
-                                    textAlign: 'center',
-                                    padding: 'var(--space-xs)',
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    color: 'var(--color-text-muted)',
-                                }}>
-                                    {day}
-                                </div>
-                            ))}
-
-                            {/* Calendar cells */}
-                            {calendarDays.map(({ date, isCurrentMonth }, index) => {
-                                const dateKey = formatDate(date);
-                                const dayItems = itemsByDate[dateKey] || [];
-                                const isCurrentDay = isToday(date);
-                                const isRace = isRaceDay(date);
-
-                                return (
-                                    <div
-                                        key={index}
-                                        onClick={() => dayItems.length > 0 && setSelectedItem(dayItems[0])}
-                                        style={{
-                                            minHeight: '70px',
-                                            padding: 'var(--space-xs)',
-                                            background: isRace
-                                                ? 'linear-gradient(135deg, var(--color-primary), var(--color-secondary))'
-                                                : isCurrentDay
-                                                    ? 'rgba(99, 102, 241, 0.1)'
-                                                    : isCurrentMonth
-                                                        ? 'var(--color-bg-glass)'
-                                                        : 'transparent',
-                                            borderRadius: 'var(--radius-sm)',
-                                            cursor: dayItems.length > 0 ? 'pointer' : 'default',
-                                            opacity: isCurrentMonth ? 1 : 0.4,
-                                            transition: 'all var(--transition-fast)',
-                                            border: isCurrentDay ? '2px solid var(--color-primary)' : 'none',
-                                        }}
-                                    >
-                                        <div style={{
-                                            fontSize: '0.75rem',
-                                            fontWeight: isCurrentDay || isRace ? 600 : 400,
-                                            color: isRace ? 'white' : 'var(--color-text-secondary)',
-                                            marginBottom: '2px',
-                                        }}>
-                                            {date.getDate()}
-                                            {isRace && ' 🏁'}
-                                        </div>
-
-                                        {dayItems.map((item, i) => (
-                                            <div
-                                                key={i}
-                                                style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '2px',
-                                                    padding: '2px 4px',
-                                                    background: item.type === 'activity'
-                                                        ? 'rgba(16, 185, 129, 0.2)'
-                                                        : `${SESSION_COLORS[item.session_type] || 'var(--color-primary)'}22`,
-                                                    borderLeft: item.type === 'activity'
-                                                        ? '3px solid var(--color-success)'
-                                                        : `3px solid ${SESSION_COLORS[item.session_type] || 'var(--color-primary)'}`,
-                                                    borderRadius: 'var(--radius-sm)',
-                                                    fontSize: '0.65rem',
-                                                    marginBottom: '2px',
-                                                    overflow: 'hidden',
-                                                    whiteSpace: 'nowrap',
-                                                }}
-                                            >
-                                                {item.type === 'activity' ? (
-                                                    <>
-                                                        <CheckCircle size={10} style={{ color: 'var(--color-success)' }} />
-                                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
-                                                            {item.distance_km}km
-                                                        </span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <span>{SESSION_ICONS[item.session_type] || '🏃'}</span>
-                                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
-                                                            {item.target_duration_min}min
-                                                        </span>
-                                                    </>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                );
-                            })}
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => navigateMonth(-1)}
+                                style={{ padding: 'var(--space-xs)' }}
+                            >
+                                <ChevronLeft size={20} />
+                            </button>
+                            <h4 style={{ margin: 0, minWidth: '140px', textAlign: 'center' }}>
+                                {currentMonth.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
+                            </h4>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => navigateMonth(1)}
+                                style={{ padding: 'var(--space-xs)' }}
+                            >
+                                <ChevronRight size={20} />
+                            </button>
                         </div>
+                    </div>
 
-                        {/* Selected Session Details */}
-                        {selectedItem && (
-                            <div style={{
-                                marginTop: 'var(--space-lg)',
-                                padding: 'var(--space-md)',
-                                background: 'var(--color-bg-glass)',
-                                borderRadius: 'var(--radius-md)',
-                                border: `2px solid ${selectedItem.type === 'activity' ? 'var(--color-success)' : SESSION_COLORS[selectedItem.session_type] || 'var(--color-primary)'}`,
+                    {/* Calendar Grid */}
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(7, 1fr)',
+                        gap: '2px',
+                    }}>
+                        {/* Day headers */}
+                        {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(day => (
+                            <div key={day} style={{
+                                textAlign: 'center',
+                                padding: 'var(--space-xs)',
+                                fontSize: '0.75rem',
+                                fontWeight: 600,
+                                color: 'var(--color-text-muted)',
                             }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                    <div>
-                                        <h4 style={{ margin: 0, marginBottom: 'var(--space-xs)' }}>
-                                            {selectedItem.type === 'activity' ? (
-                                                <>✓ {selectedItem.title}</>
+                                {day}
+                            </div>
+                        ))}
+
+                        {/* Calendar cells */}
+                        {calendarDays.map(({ date, isCurrentMonth }, index) => {
+                            const dateKey = formatDate(date);
+                            const dayItems = itemsByDate[dateKey] || [];
+                            const isCurrentDay = isToday(date);
+                            const isRace = isRaceDay(date);
+
+                            return (
+                                <div
+                                    key={index}
+                                    onClick={() => dayItems.length > 0 && setSelectedItem(dayItems[0])}
+                                    style={{
+                                        minHeight: '70px',
+                                        padding: 'var(--space-xs)',
+                                        background: isRace
+                                            ? 'linear-gradient(135deg, var(--color-primary), var(--color-secondary))'
+                                            : isCurrentDay
+                                                ? 'rgba(99, 102, 241, 0.1)'
+                                                : isCurrentMonth
+                                                    ? 'var(--color-bg-glass)'
+                                                    : 'transparent',
+                                        borderRadius: 'var(--radius-sm)',
+                                        cursor: dayItems.length > 0 ? 'pointer' : 'default',
+                                        opacity: isCurrentMonth ? 1 : 0.4,
+                                        transition: 'all var(--transition-fast)',
+                                        border: isCurrentDay ? '2px solid var(--color-primary)' : 'none',
+                                    }}
+                                >
+                                    <div style={{
+                                        fontSize: '0.75rem',
+                                        fontWeight: isCurrentDay || isRace ? 600 : 400,
+                                        color: isRace ? 'white' : 'var(--color-text-secondary)',
+                                        marginBottom: '2px',
+                                    }}>
+                                        {date.getDate()}
+                                        {isRace && ' 🏁'}
+                                    </div>
+
+                                    {dayItems.map((item, i) => (
+                                        <div
+                                            key={i}
+                                            style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '2px',
+                                                padding: '2px 4px',
+                                                background: item.type === 'activity'
+                                                    ? 'rgba(16, 185, 129, 0.2)'
+                                                    : `${SESSION_COLORS[item.session_type] || 'var(--color-primary)'}22`,
+                                                borderLeft: item.type === 'activity'
+                                                    ? '3px solid var(--color-success)'
+                                                    : `3px solid ${SESSION_COLORS[item.session_type] || 'var(--color-primary)'}`,
+                                                borderRadius: 'var(--radius-sm)',
+                                                fontSize: '0.65rem',
+                                                marginBottom: '2px',
+                                                overflow: 'hidden',
+                                                whiteSpace: 'nowrap',
+                                            }}
+                                        >
+                                            {item.type === 'activity' ? (
+                                                <>
+                                                    <CheckCircle size={10} style={{ color: 'var(--color-success)' }} />
+                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+                                                        {item.distance_km}km
+                                                    </span>
+                                                </>
                                             ) : (
-                                                <>{SESSION_ICONS[selectedItem.session_type]} {selectedItem.title}</>
+                                                <>
+                                                    <span>{SESSION_ICONS[item.session_type] || '🏃'}</span>
+                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+                                                        {item.target_duration_min}min
+                                                    </span>
+                                                </>
                                             )}
-                                        </h4>
-                                        <p style={{
-                                            fontSize: '0.875rem',
-                                            color: 'var(--color-text-muted)',
-                                            margin: 0
-                                        }}>
-                                            {new Date(selectedItem.date).toLocaleDateString('fr-FR', {
-                                                weekday: 'long',
-                                                day: 'numeric',
-                                                month: 'long'
-                                            })}
-                                        </p>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Selected Session Details */}
+                    {selectedItem && (
+                        <div style={{
+                            marginTop: 'var(--space-lg)',
+                            padding: 'var(--space-md)',
+                            background: 'var(--color-bg-glass)',
+                            borderRadius: 'var(--radius-md)',
+                            border: `2px solid ${selectedItem.type === 'activity' ? 'var(--color-success)' : SESSION_COLORS[selectedItem.session_type] || 'var(--color-primary)'}`,
+                        }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                <div>
+                                    <h4 style={{ margin: 0, marginBottom: 'var(--space-xs)' }}>
+                                        {selectedItem.type === 'activity' ? (
+                                            <>✓ {selectedItem.title}</>
+                                        ) : (
+                                            <>{SESSION_ICONS[selectedItem.session_type]} {selectedItem.title}</>
+                                        )}
+                                    </h4>
+                                    <p style={{
+                                        fontSize: '0.875rem',
+                                        color: 'var(--color-text-muted)',
+                                        margin: 0
+                                    }}>
+                                        {new Date(selectedItem.date).toLocaleDateString('fr-FR', {
+                                            weekday: 'long',
+                                            day: 'numeric',
+                                            month: 'long'
+                                        })}
+                                    </p>
+                                </div>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={() => setSelectedItem(null)}
+                                    style={{ padding: 'var(--space-xs)' }}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
+                                gap: 'var(--space-md)',
+                                marginTop: 'var(--space-md)',
+                            }}>
+                                <div style={{ textAlign: 'center' }}>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                                        <Timer size={14} /> Durée
                                     </div>
-                                    <button
-                                        className="btn btn-secondary"
-                                        onClick={() => setSelectedItem(null)}
-                                        style={{ padding: 'var(--space-xs)' }}
-                                    >
-                                        ✕
-                                    </button>
+                                    <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
+                                        {selectedItem.type === 'activity'
+                                            ? `${selectedItem.duration_min}min`
+                                            : `${selectedItem.target_duration_min}min`
+                                        }
+                                    </div>
                                 </div>
 
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
-                                    gap: 'var(--space-md)',
-                                    marginTop: 'var(--space-md)',
-                                }}>
-                                    <div style={{ textAlign: 'center' }}>
-                                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                                            <Timer size={14} /> Durée
+                                {selectedItem.type === 'activity' ? (
+                                    <>
+                                        <div style={{ textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                                                <Map size={14} /> Distance
+                                            </div>
+                                            <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
+                                                {selectedItem.distance_km}km
+                                            </div>
                                         </div>
-                                        <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
-                                            {selectedItem.type === 'activity'
-                                                ? `${selectedItem.duration_min}min`
-                                                : `${selectedItem.target_duration_min}min`
-                                            }
+                                        <div style={{ textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                                                <Target size={14} /> Allure
+                                            </div>
+                                            <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
+                                                {formatPace(selectedItem.pace_per_km) || 'N/A'}
+                                            </div>
                                         </div>
-                                    </div>
-
-                                    {selectedItem.type === 'activity' ? (
-                                        <>
-                                            <div style={{ textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                                                    <Map size={14} /> Distance
-                                                </div>
-                                                <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
-                                                    {selectedItem.distance_km}km
-                                                </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div style={{ textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                                                <Target size={14} /> Allure cible
                                             </div>
-                                            <div style={{ textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                                                    <Target size={14} /> Allure
-                                                </div>
-                                                <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
-                                                    {formatPace(selectedItem.pace_per_km) || 'N/A'}
-                                                </div>
+                                            <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
+                                                {formatPace(selectedItem.target_pace_per_km) || 'Libre'}
                                             </div>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <div style={{ textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                                                    <Target size={14} /> Allure cible
-                                                </div>
-                                                <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>
-                                                    {formatPace(selectedItem.target_pace_per_km) || 'Libre'}
-                                                </div>
-                                            </div>
-                                        </>
-                                    )}
-                                </div>
-
-                                {selectedItem.workout_details && (
-                                    <div style={{ marginTop: 'var(--space-md)', padding: 'var(--space-md)', background: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-sm)' }}>
-                                        <div style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: 'var(--space-xs)' }}>Détails de la séance</div>
-                                        <div style={{ fontSize: '0.875rem', whiteSpace: 'pre-line' }}>{selectedItem.workout_details}</div>
-                                    </div>
+                                        </div>
+                                    </>
                                 )}
                             </div>
-                        )}
-                    </>
-                )}
+
+                            {selectedItem.workout_details && (
+                                <div style={{ marginTop: 'var(--space-md)', padding: 'var(--space-md)', background: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-sm)' }}>
+                                    <div style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: 'var(--space-xs)' }}>Détails de la séance</div>
+                                    <div style={{ fontSize: '0.875rem', whiteSpace: 'pre-line' }}>{selectedItem.workout_details}</div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

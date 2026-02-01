@@ -442,3 +442,21 @@ export function RaceGoalForm({ onGoalCreated, onCancel }) {
 }
 
 export default RaceGoalForm;
+
+/* Add to your global CSS or inside a style tag in this component */
+const styles = `
+  input[type=number]::-webkit-inner-spin-button, 
+  input[type=number]::-webkit-outer-spin-button { 
+    -webkit-appearance: none; 
+    margin: 0; 
+  }
+  input[type=number] {
+    -moz-appearance: textfield;
+  }
+`;
+
+// Inject styles
+const styleSheet = document.createElement("style");
+styleSheet.innerText = styles;
+document.head.appendChild(styleSheet);
+

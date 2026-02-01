@@ -1,8 +1,6 @@
-"""Coaching service - the AI brain that makes training decisions."""
-
-from sqlalchemy.orm import Session
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import Optional
+from sqlalchemy.orm import Session
 
 from app.models import User, Activity, DailyCheckin, PlannedSession
 from app.schemas import (
@@ -14,6 +12,7 @@ from app.schemas import (
 from app.services.llm_service import LLMService
 from app.services.metrics_service import MetricsService
 
+_RECOMMENDATION_CACHE = {}
 
 class CoachingService:
     """AI-powered coaching service for training decisions."""
@@ -35,6 +34,14 @@ class CoachingService:
         
         Sends to Gemini Pro for decision.
         """
+        # Check cache (simple in-memory for now)
+        # In production this should be Redis or DB-persisted
+        if user.id in _RECOMMENDATION_CACHE:
+            entry = _RECOMMENDATION_CACHE[user.id]
+            # 1 hour cache to avoid constant re-generation on refresh
+            if datetime.now() - entry["timestamp"] < timedelta(minutes=60):
+                return entry["data"]
+
         # Gather context
         context = await self._build_coaching_context(user)
         
@@ -42,13 +49,21 @@ class CoachingService:
         try:
             decision_data = await self.llm_service.get_coaching_decision(context)
             
-            return CoachingDecision(
+            result = CoachingDecision(
                 action=decision_data.get("action", "maintain"),
                 confidence=decision_data.get("confidence", 0.5),
                 reasoning=decision_data.get("reasoning", ""),
                 adjustments=decision_data.get("adjustments"),
                 message_to_user=decision_data.get("message_to_user", "Keep up the good work!"),
             )
+            
+            # Update cache
+            _RECOMMENDATION_CACHE[user.id] = {
+                "timestamp": datetime.now(),
+                "data": result
+            }
+            
+            return result
         except Exception as e:
             # Fallback to rule-based decision if LLM fails
             return self._fallback_decision(user, context)

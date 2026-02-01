@@ -101,6 +101,23 @@ class ApiService {
         });
     }
 
+    reclassifyActivities(activityIds) {
+        return this.fetch('/activities/classify', {
+            method: 'POST',
+            body: JSON.stringify(activityIds),
+        });
+    }
+
+    batchUpdateClassification(activityIds, classification) {
+        return this.fetch('/activities/batch-update', {
+            method: 'POST',
+            body: JSON.stringify({
+                activity_ids: activityIds,
+                classification: classification
+            }),
+        });
+    }
+
     // Checkins
     getCheckins(days = 14) {
         return this.fetch(`/checkins/?days=${days}`);

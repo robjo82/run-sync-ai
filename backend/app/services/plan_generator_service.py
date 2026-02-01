@@ -9,6 +9,7 @@ from sqlalchemy import func
 from app.models import User, RaceGoal, PlannedSession, Activity
 from app.services.llm_service import LLMService
 from app.services.metrics_service import MetricsService
+from app.services.strava_service import StravaService
 
 
 class PlanGeneratorService:
@@ -47,8 +48,9 @@ class PlanGeneratorService:
         self.db = db
         self.llm_service = LLMService()
         self.metrics_service = MetricsService(db)
+        self.strava_service = StravaService(db)
     
-    def _get_user_activity_profile(self, user: User, days: int = 90) -> Dict[str, Any]:
+    async def _get_user_activity_profile(self, user: User, days: int = 90) -> Dict[str, Any]:
         """Build a profile of the user's recent training history."""
         since = date.today() - timedelta(days=days)
         
@@ -57,12 +59,16 @@ class PlanGeneratorService:
             .filter(
                 Activity.user_id == user.id,
                 Activity.start_date >= since,
-                Activity.activity_type.in_(["Run", "Trail Run", "Track"])
+                Activity.activity_type.in_(["Run", "Trail Run", "Track", "Ride", "VirtualRide"])
             )
             .all()
         )
+
+        # Fetch Strava Global Stats (Career totals)
+        strava_stats = await self.strava_service.get_athlete_stats(user)
+        all_run_totals = strava_stats.get("all_run_totals", {})
         
-        if not activities:
+        if not activities and not all_run_totals:
             return {
                 "has_history": False,
                 "weekly_volume_km": 0,
@@ -71,6 +77,8 @@ class PlanGeneratorService:
                 "longest_run_km": 0,
                 "avg_pace_per_km": None,
                 "recent_activities": [],
+                "physiological_data": {},
+                "records": {}
             }
         
         # Calculate stats
@@ -79,7 +87,10 @@ class PlanGeneratorService:
         weeks = max(1, days / 7)
         
         # Find longest run
-        longest_run = max(activities, key=lambda a: a.distance)
+        if activities:
+            longest_run = max(activities, key=lambda a: a.distance)
+        else:
+            longest_run = None
         
         # Calculate average pace (seconds per km)
         avg_pace = None
@@ -88,6 +99,65 @@ class PlanGeneratorService:
             total_pace_weighted = sum((a.moving_time / (a.distance / 1000)) * a.distance for a in paced_activities)
             total_weight = sum(a.distance for a in paced_activities)
             avg_pace = int(total_pace_weighted / total_weight) if total_weight > 0 else None
+
+        # Physiological Analysis (Heart Rate)
+        max_hr_observed = 0
+        avg_hrs = []
+        for a in activities:
+            if a.max_heartrate:
+                max_hr_observed = max(max_hr_observed, a.max_heartrate)
+            if a.average_heartrate and a.activity_type == "Run":
+                avg_hrs.append(a.average_heartrate)
+        
+        avg_hr_run = int(sum(avg_hrs) / len(avg_hrs)) if avg_hrs else None
+        
+        physiology = {
+            "resting_hr": user.resting_heart_rate,
+            "max_hr_setting": user.max_heart_rate,
+            "max_hr_observed": max_hr_observed,
+            "avg_hr_run": avg_hr_run,
+            "hr_reserve": (user.max_heart_rate - user.resting_heart_rate) if user.max_heart_rate and user.resting_heart_rate else None
+        }
+
+        # Calculate VMA / Best performances
+        best_5k = min((a for a in activities if a.distance >= 5000 and a.activity_type == "Run"), 
+                     key=lambda x: x.moving_time / (x.distance/1000), default=None)
+        best_10k = min((a for a in activities if a.distance >= 10000 and a.activity_type == "Run"), 
+                      key=lambda x: x.moving_time / (x.distance/1000), default=None)
+        
+        estimated_vma = None
+        if best_10k:
+            pace_10k = (best_10k.moving_time / 60) / (best_10k.distance / 1000) # min/km
+            speed_10k = 60 / pace_10k # km/h
+            estimated_vma = speed_10k * 1.05 # Rough estimate: 10km is ~90-95% VMA
+        elif best_5k:
+             pace_5k = (best_5k.moving_time / 60) / (best_5k.distance / 1000)
+             speed_5k = 60 / pace_5k
+             estimated_vma = speed_5k * 1.10
+             
+        # Records Context
+        records = {
+            "estimated_vma": round(estimated_vma, 1) if estimated_vma else None,
+            "best_5k_recent": self._format_pace(int(best_5k.moving_time / (best_5k.distance/1000))) if best_5k else None,
+            "best_10k_recent": self._format_pace(int(best_10k.moving_time / (best_10k.distance/1000))) if best_10k else None,
+            "career_total_km": int(all_run_totals.get("distance", 0) / 1000) if all_run_totals else 0,
+            "career_total_runs": all_run_totals.get("count", 0) if all_run_totals else 0
+        }
+
+        # Commute Analysis (Vélotaff)
+        bike_commutes = [
+            a for a in activities 
+            if a.activity_type in ["Ride", "VirtualRide"] 
+            and a.distance < 15000 
+            and a.moving_time < 2400 # < 40 mins
+        ]
+        commute_count = len(bike_commutes)
+        
+        # Gap analysis
+        days_since_last_run = 0
+        last_run = max((a for a in activities if a.activity_type == "Run"), key=lambda x: x.start_date, default=None)
+        if last_run:
+            days_since_last_run = (date.today() - last_run.start_date.date()).days
         
         # Get recent activity summaries for LLM context
         recent = sorted(activities, key=lambda a: a.start_date, reverse=True)[:10]
@@ -98,6 +168,7 @@ class PlanGeneratorService:
                 "distance_km": round(a.distance / 1000, 1),
                 "duration_min": round(a.moving_time / 60, 0),
                 "pace_per_km": self._format_pace(int(a.moving_time / (a.distance / 1000))) if a.distance > 0 else None,
+                "avg_hr": a.average_heartrate,
                 "elevation": a.total_elevation_gain,
             }
             for a in recent
@@ -110,10 +181,16 @@ class PlanGeneratorService:
             "weekly_volume_km": round(total_distance / 1000 / weeks, 1),
             "weekly_hours": round(total_time / 3600 / weeks, 1),
             "runs_per_week": round(len(activities) / weeks, 1),
-            "longest_run_km": round(longest_run.distance / 1000, 1),
-            "longest_run_date": longest_run.start_date.isoformat() if longest_run.start_date else None,
+            "longest_run_km": round(longest_run.distance / 1000, 1) if longest_run else 0,
+            "longest_run_date": longest_run.start_date.isoformat() if longest_run and longest_run.start_date else None,
             "avg_pace_per_km": avg_pace,
             "avg_pace_formatted": self._format_pace(avg_pace) if avg_pace else None,
+            "estimated_vma": round(estimated_vma, 1) if estimated_vma else None,
+            "physiological_data": physiology,
+            "records": records,
+            "commute_count": commute_count,
+            "is_commuter": commute_count > 5,
+            "days_since_last_run": days_since_last_run,
             "recent_activities": recent_summaries,
         }
     
@@ -131,7 +208,7 @@ class PlanGeneratorService:
             for session_type, multiplier in self.PACE_ZONES.items()
         }
     
-    def _format_pace(self, seconds_per_km: int) -> str:
+    def _format_pace(self, seconds_per_km: Optional[int]) -> str:
         """Format pace as MM:SS/km."""
         if not seconds_per_km:
             return "N/A"
@@ -157,7 +234,7 @@ class PlanGeneratorService:
         current_metrics = self.metrics_service.get_current_metrics(user)
         
         # Get user's activity history profile
-        activity_profile = self._get_user_activity_profile(user, days=90)
+        activity_profile = await self._get_user_activity_profile(user, days=90)
         
         # Calculate target paces
         target_paces = self._calculate_target_paces(goal)
@@ -198,6 +275,8 @@ class PlanGeneratorService:
             
             # Activity history
             "activity_profile": activity_profile,
+            "physiological_data": activity_profile.get("physiological_data"),
+            "records": activity_profile.get("records"),
             
             # User notes
             "user_notes": goal.notes,
@@ -235,6 +314,7 @@ class PlanGeneratorService:
             return result
         except Exception as e:
             # Return empty for fallback
+            print(f"LLM Error: {e}")
             return {"weeks": [], "explanation": None}
     
     def _get_inline_prompt(self, context: Dict[str, Any]) -> str:
@@ -248,8 +328,9 @@ class PlanGeneratorService:
 ## Instructions
 
 Génère un plan d'entraînement structuré en JSON avec:
-1. Une explication détaillée du plan (philosophie, phases, progression)
-2. Les séances pour chaque semaine avec détails précis
+1. Une explication détaillée et spontanée du plan (philosophie, phases, progression). L'explication DOIT être personnalisée par rapport à l'état de forme actuel (CTL) et à l'historique de l'athlète. Justifie tes choix.
+2. Les séances pour chaque semaine avec détails précis.
+3. IMPORTANT : Ne planifie des séances QUE sur les jours disponibles ({context.get('available_days_names')}). Si un jour n'est pas disponible, c'est IMPOSSIBLE de s'entraîner ce jour-là.
 
 ## Format de sortie JSON
 

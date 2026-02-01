@@ -60,6 +60,12 @@ class Activity(Base):
     trimp_score = Column(Float, nullable=True)
     relative_effort = Column(Float, nullable=True)
     
+    # Strava best efforts (segment PRs within this activity)
+    best_efforts = Column(JSON, nullable=True)  # [{name: "5K", elapsed_time: 1256, ...}, ...]
+    
+    # Equipment used
+    gear_id = Column(String(50), nullable=True)  # Strava gear ID
+    
     # Raw telemetry streams (JSONB)
     telemetry = Column(JSON, nullable=True)  # {heartrate: [...], speed: [...], altitude: [...]}
     

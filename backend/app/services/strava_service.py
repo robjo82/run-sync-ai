@@ -154,6 +154,44 @@ class StravaService:
             
             response.raise_for_status()
             return response.json()
+
+    async def get_athlete_stats(self, user: User) -> Dict[str, Any]:
+        """Fetch athlete statistics (totals, records) from Strava."""
+        if not user.strava_athlete_id:
+            return {}
+
+        access_token = await self.refresh_token(user)
+        if not access_token:
+            return {}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.BASE_URL}/athletes/{user.strava_athlete_id}/stats",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            
+            if response.status_code != 200:
+                print(f"Error fetching stats for user {user.id}: {response.text}")
+                return {}
+
+            return response.json()
+
+    async def get_activity_detail(self, user: User, activity_id: str) -> Dict[str, Any]:
+        """Fetch detailed activity data including best_efforts."""
+        access_token = await self.refresh_token(user)
+        if not access_token:
+            return {}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.BASE_URL}/activities/{activity_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            
+            if response.status_code != 200:
+                return {}
+
+            return response.json()
     
     async def sync_activities(
         self,
@@ -214,6 +252,15 @@ class StravaService:
                 start_latlng=activity_data.get("start_latlng"),
                 end_latlng=activity_data.get("end_latlng"),
             )
+            
+            # Fetch detailed activity to get best_efforts and gear_id
+            try:
+                detail = await self.get_activity_detail(user, strava_id)
+                if detail:
+                    activity.best_efforts = detail.get("best_efforts")
+                    activity.gear_id = detail.get("gear_id")
+            except Exception:
+                pass
             
             # Try to fetch streams for more detailed data
             try:

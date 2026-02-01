@@ -10,6 +10,7 @@ import { RaceGoalForm } from './components/RaceGoalForm';
 import { TrainingCalendar } from './components/TrainingCalendar';
 import { LandingPage } from './pages/LandingPage';
 import AuthModal from './components/AuthModal';
+import RecordsCard from './components/RecordsCard';
 
 function AppContent() {
     const { user, isAuthenticated, logout } = useAuth();
@@ -58,37 +59,62 @@ function AppContent() {
         }
     }, [activeTab]);
 
-    const loadDashboardData = async () => {
+    const loadDashboardData = async (options = {}) => {
+        const { refreshStatsOnly = false } = options;
+
+        setLoading(prev => ({
+            ...prev,
+            activities: true,
+            stats: true,
+            metrics: true,
+            // Only show loading for heavy items if we are actually fetching them
+            fitness: !refreshStatsOnly ? true : prev.fitness,
+            recommendation: !refreshStatsOnly ? true : prev.recommendation,
+        }));
+
         try {
+            // Always fetch strictly necessary data for list updates
+            const activitiesPromise = api.getActivities({ limit: 200, include_excluded: true }).catch(() => []);
+            const statsPromise = api.getActivityStats(7).catch(() => null);
+            const acwrPromise = api.getAcwrStatus().catch(() => null);
+
+            // Conditional heavy fetches
+            const fitnessPromise = !refreshStatsOnly ? api.getFitnessHistory(90).catch(() => null) : Promise.resolve(null);
+            const recommendationPromise = !refreshStatsOnly ? api.getRecommendation().catch(() => null) : Promise.resolve(null);
+            const authPromise = !refreshStatsOnly ? api.getAuthStatus().catch(() => null) : Promise.resolve(null);
+
             const [activities, fitnessHistory, acwrStatus, recommendation, stats, authStatus] = await Promise.all([
-                api.getActivities({ limit: 200, include_excluded: true }).catch(() => []),
-                api.getFitnessHistory(90).catch(() => null),
-                api.getAcwrStatus().catch(() => null),
-                api.getRecommendation().catch(() => null),
-                api.getActivityStats(7).catch(() => null),
-                api.getAuthStatus().catch(() => null),
+                activitiesPromise,
+                fitnessPromise,
+                acwrPromise,
+                recommendationPromise,
+                statsPromise,
+                authPromise,
             ]);
 
-            setData({
+            setData(prev => ({
+                ...prev,
                 activities,
-                fitnessHistory,
-                acwrStatus,
-                recommendation,
                 stats,
-                authStatus,
-            });
+                acwrStatus,
+                // Only update if we fetched them, otherwise keep previous
+                fitnessHistory: fitnessHistory || prev.fitnessHistory,
+                recommendation: recommendation || prev.recommendation,
+                authStatus: authStatus || prev.authStatus,
+                // If we did a full refresh, update everything
+            }));
         } catch (err) {
             console.error('Error loading dashboard:', err);
             setError('Erreur lors du chargement des données');
         } finally {
             setLoading({
                 activities: false,
-                fitness: false,
-                metrics: false,
-                recommendation: false,
                 stats: false,
+                metrics: false,
                 sync: false,
                 goals: false,
+                fitness: false,
+                recommendation: false,
             });
         }
     };
@@ -253,7 +279,11 @@ function AppContent() {
                     <div className="dashboard-grid">
                         <div className="dashboard-main" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
                             <FitnessChart data={data.fitnessHistory} loading={loading.fitness} />
-                            <ActivityList activities={data.activities} loading={loading.activities} />
+                            <ActivityList
+                                activities={data.activities}
+                                loading={loading.activities}
+                                onClassify={() => loadDashboardData({ refreshStatsOnly: true })}
+                            />
                         </div>
 
                         <div className="dashboard-sidebar">
@@ -271,6 +301,7 @@ function AppContent() {
                                 onApplyAdjustment={handleApplyAdjustment}
                             />
                             <DailyCheckin onSubmit={handleCheckinSubmit} loading={false} />
+                            <RecordsCard />
                         </div>
                     </div>
                 </>
