@@ -223,6 +223,56 @@ class ApiService {
         });
     }
 
+    async *streamMessage(threadId, content) {
+        const url = `${this.baseUrl}/threads/${threadId}/messages`;
+        const token = localStorage.getItem('token');
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({ content }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.detail || `HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+
+                // Process all complete lines
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.trim()) {
+                        try {
+                            const event = JSON.parse(line);
+                            yield event;
+                        } catch (e) {
+                            console.warn('Failed to parse SSE line:', line, e);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Stream Error:', error);
+            throw error;
+        }
+    }
+
     archiveThread(threadId) {
         return this.fetch(`/threads/${threadId}`, { method: 'DELETE' });
     }

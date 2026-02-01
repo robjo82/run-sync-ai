@@ -1,8 +1,10 @@
 """Coaching threads API router for conversational plan management."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List
 from datetime import datetime
 
 from app.database import get_db
@@ -104,10 +106,10 @@ async def create_thread(
     if thread_data.initial_message:
         coach_service = ConversationalCoachService(db)
         await coach_service.process_message(
-            thread_id=thread.id,
             user_message=thread_data.initial_message,
-            user=user,
             goal=goal,
+            user=user,
+            thread=thread,
         )
         db.refresh(thread)
     
@@ -159,15 +161,25 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Cannot send messages to archived thread")
     
     # Process the message
+    # Process the message
     coach_service = ConversationalCoachService(db)
-    result = await coach_service.process_message(
-        thread_id=thread_id,
-        user_message=message.content,
-        user=user,
-        goal=goal,
-    )
     
-    return result
+    # Check if client accepts stream (optional, or just force stream if we change the contract)
+    # Ideally we'd check Accept header, but for this task we switch to stream always
+    # or arguably we should have a separate endpoint / param.
+    # Given the implementation plan says "Convert messages endpoint", we switch it.
+    
+    async def event_generator():
+        async for event in coach_service.stream_process_message(
+            user_message=message.content,
+            goal=goal,
+            user=user,
+            thread=thread,
+        ):
+            yield json.dumps(event) + "\n"
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.delete("/{thread_id}")

@@ -32,9 +32,7 @@ export function RaceGoalForm({ onGoalCreated, onCancel }) {
         name: '',
         race_date: '',
         race_type: 'half',
-        target_hours: 1,
-        target_minutes: 45,
-        target_seconds: 0,
+        target_time_display: '',
         priority: 'A',
         available_days: [1, 2, 3, 5, 6, 7],
         long_run_day: 6,
@@ -64,11 +62,31 @@ export function RaceGoalForm({ onGoalCreated, onCancel }) {
         setLoading(true);
 
         try {
-            // Convert target time to seconds
-            const target_time_seconds =
-                formData.target_hours * 3600 +
-                formData.target_minutes * 60 +
-                formData.target_seconds;
+            // Parse target time string
+            let target_time_seconds = 0;
+            const timeStr = formData.target_time_display ? formData.target_time_display.toString().toLowerCase().replace(/\s/g, '') : '';
+
+            if (timeStr) {
+                if (timeStr.includes('h') || timeStr.includes(':')) {
+                    const parts = timeStr.split(/[h:]/);
+                    const hours = parseInt(parts[0]) || 0;
+                    const minutes = parseInt(parts[1]) || 0;
+                    target_time_seconds = hours * 3600 + minutes * 60;
+                } else if (timeStr.includes('min') || timeStr.includes('m')) {
+                    const minutes = parseInt(timeStr) || 0;
+                    target_time_seconds = minutes * 60;
+                } else {
+                    // Heuristic: if <= 7, assume hours (marathon), else minutes
+                    const val = parseFloat(timeStr);
+                    if (!isNaN(val)) {
+                        if (val <= 7) {
+                            target_time_seconds = val * 3600;
+                        } else {
+                            target_time_seconds = val * 60;
+                        }
+                    }
+                }
+            }
 
             const goalData = {
                 name: formData.name,
@@ -216,42 +234,17 @@ export function RaceGoalForm({ onGoalCreated, onCancel }) {
                         marginBottom: 'var(--space-xs)'
                     }}>
                         <Clock size={14} />
-                        Temps cible (optionnel)
+                        Temps cible (ex: 1h45, 45min, 3:30)
                     </label>
-                    <div style={{ display: 'flex', gap: 'var(--space-sm)', alignItems: 'center' }}>
-                        <input
-                            type="number"
-                            className="input"
-                            placeholder="H"
-                            min="0"
-                            max="23"
-                            value={formData.target_hours}
-                            onChange={(e) => handleChange('target_hours', parseInt(e.target.value) || 0)}
-                            style={{ width: '60px', textAlign: 'center' }}
-                        />
-                        <span>:</span>
-                        <input
-                            type="number"
-                            className="input"
-                            placeholder="M"
-                            min="0"
-                            max="59"
-                            value={formData.target_minutes}
-                            onChange={(e) => handleChange('target_minutes', parseInt(e.target.value) || 0)}
-                            style={{ width: '60px', textAlign: 'center' }}
-                        />
-                        <span>:</span>
-                        <input
-                            type="number"
-                            className="input"
-                            placeholder="S"
-                            min="0"
-                            max="59"
-                            value={formData.target_seconds}
-                            onChange={(e) => handleChange('target_seconds', parseInt(e.target.value) || 0)}
-                            style={{ width: '60px', textAlign: 'center' }}
-                        />
-                    </div>
+                    <input
+                        type="text"
+                        className="input"
+                        placeholder="ex: 1h45"
+                        value={formData.target_time_display || ''}
+                        onChange={(e) => {
+                            handleChange('target_time_display', e.target.value);
+                        }}
+                    />
                 </div>
 
                 {/* Priority */}
@@ -442,21 +435,3 @@ export function RaceGoalForm({ onGoalCreated, onCancel }) {
 }
 
 export default RaceGoalForm;
-
-/* Add to your global CSS or inside a style tag in this component */
-const styles = `
-  input[type=number]::-webkit-inner-spin-button, 
-  input[type=number]::-webkit-outer-spin-button { 
-    -webkit-appearance: none; 
-    margin: 0; 
-  }
-  input[type=number] {
-    -moz-appearance: textfield;
-  }
-`;
-
-// Inject styles
-const styleSheet = document.createElement("style");
-styleSheet.innerText = styles;
-document.head.appendChild(styleSheet);
-

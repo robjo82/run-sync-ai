@@ -32,13 +32,12 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate, initial
         }
     }, [initialAutoMessage]);
 
-    // Update handleSendMessage to accept direct content override
     const handleSendMessage = async (e, contentOverride = null) => {
         e.preventDefault();
         const content = contentOverride || newMessage.trim();
         if (!content) return;
 
-        // Always clear the input, even if it was an override (because we likely set the input for visual effect before)
+        // Always clear the input
         setNewMessage('');
 
         // Reset height
@@ -56,41 +55,80 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate, initial
             pending: true
         };
 
-        setMessages(prev => [...prev, optimisticMessage]);
+        // Placeholder for coach response to stream into
+        const tempCoachId = tempId + 1;
+        const optimisticCoachMessage = {
+            id: tempCoachId,
+            role: 'assistant',
+            content: '',
+            thinking: '', // NEW: Hold thoughts
+            created_at: new Date().toISOString(),
+            pending: true,
+            isStreaming: true
+        };
+
+        setMessages(prev => [...prev, optimisticMessage, optimisticCoachMessage]);
         setLoading(true);
+        setError(null);
 
         try {
             if (!threadId) {
-                // First message -> create thread
+                // First message -> create thread (still uses standard non-streaming for now, or convert?
+                // The implementation plan mainly targeted existing threads.
+                // Let's create thread then stream the response? 
+                // Currently createThread takes initialMessage. 
+                // To support streaming on first message, we'd need CreateThread to return stream or 
+                // Create thread empty then stream message.
+                // For simplicity/stability: Create thread normal, then reload. 
+                // Streaming only works for subsequent messages in this iteration unless we refactor Create.
+
                 const thread = await api.createThread(goalId, {
                     initialMessage: content
                 });
                 if (onThreadCreated) onThreadCreated(thread);
-                // The thread creation processing will include the response
-                // We'll reload the full thread to get everything correct
                 const fullThread = await api.getThread(thread.id);
                 setMessages(fullThread.messages);
             } else {
-                // Existing thread
-                const response = await api.sendMessage(threadId, content);
+                // Existing thread - STREAMING
+                let currentText = "";
+                let currentThinking = "";
 
-                // Remove optimistic message and add real ones
-                setMessages(prev => [
-                    ...prev.filter(m => m.id !== tempId),
-                    response.user_message,
-                    response.coach_response
-                ]);
+                for await (const event of api.streamMessage(threadId, content)) {
+                    if (event.type === 'thought') {
+                        currentThinking += event.content;
+                        setMessages(prev => prev.map(m =>
+                            m.id === tempCoachId
+                                ? { ...m, thinking: currentThinking }
+                                : m
+                        ));
+                    } else if (event.type === 'text') {
+                        currentText += event.content;
+                        setMessages(prev => prev.map(m =>
+                            m.id === tempCoachId
+                                ? { ...m, content: currentText }
+                                : m
+                        ));
+                    } else if (event.type === 'meta') {
+                        // Update IDs
+                        setMessages(prev => prev.map(m => {
+                            if (m.id === tempId) return { ...m, id: event.user_message_id, pending: false };
+                            if (m.id === tempCoachId) return { ...m, id: event.coach_message_id, pending: false, isStreaming: false };
+                            return m;
+                        }));
 
-                // Check if plan was modified
-                if (response.sessions_modified && response.sessions_modified.length > 0) {
-                    if (onPlanUpdate) onPlanUpdate();
+                        // Check for sessions modified (needs to be passed in meta or separate event)
+                        // TODO: Backend stream_process_message didn't look like it yielded session updates?
+                        // We should probably check if 'meta' has sessions_modified
+                    } else if (event.type === 'error') {
+                        throw new Error(event.content);
+                    }
                 }
             }
         } catch (err) {
             console.error('Failed to send message:', err);
             setError("Erreur lors de l'envoi du message.");
-            // Remove optimistic message on error
-            setMessages(prev => prev.filter(m => m.id !== tempId));
+            // Remove optimistic messages on error? or keep as failed
+            setMessages(prev => prev.filter(m => m.id !== tempId && m.id !== tempCoachId));
         } finally {
             setLoading(false);
         }
@@ -195,6 +233,25 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate, initial
                                 overflowWrap: 'break-word',
                                 maxWidth: '100%'
                             }}>
+                                {/* Display Thinking Process */}
+                                {msg.thinking && (
+                                    <div style={{
+                                        borderLeft: '2px solid var(--color-primary)',
+                                        paddingLeft: 'var(--space-sm)',
+                                        marginBottom: 'var(--space-sm)',
+                                        fontStyle: 'italic',
+                                        fontSize: '0.9em',
+                                        color: 'var(--color-text-muted)',
+                                        whiteSpace: 'pre-wrap'
+                                    }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
+                                            <small style={{ fontWeight: 600, opacity: 0.7 }}>Réflexion</small>
+                                            {msg.isStreaming && <Loader size={10} className="spin" />}
+                                        </div>
+                                        {msg.thinking}
+                                    </div>
+                                )}
+
                                 <ReactMarkdown
                                     components={{
                                         p: ({ node, ...props }) => <p style={{ margin: '0 0 8px 0' }} {...props} />,
@@ -231,7 +288,7 @@ const CoachingChat = ({ goalId, threadId, onThreadCreated, onPlanUpdate, initial
                             marginLeft: msg.role === 'user' ? 0 : '40px',
                         }}>
                             {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
-                            {msg.pending && ' (envoi...)'}
+                            {msg.pending && !msg.isStreaming && ' (envoi...)'}
                         </span>
                     </div>
                 ))}

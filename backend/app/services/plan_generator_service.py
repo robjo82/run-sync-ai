@@ -377,7 +377,7 @@ class PlanGeneratorService:
 Génère un plan d'entraînement structuré en JSON avec:
 1. Une explication détaillée et spontanée du plan (philosophie, phases, progression). L'explication DOIT être personnalisée par rapport à l'état de forme actuel (CTL) et à l'historique de l'athlète. Justifie tes choix.
 2. Les séances pour chaque semaine avec détails précis.
-3. IMPORTANT : Planifie les séances sur les jours disponibles ({context.get('available_days_names')}). Si des contraintes sont précisées dans les notes/chat, elles sont prioritaires sur cette liste.
+3. IMPORTANT : Planifie les séances UNIQUEMENT sur les jours disponibles ({context.get('available_days_names')}). Le nombre de séances par semaine DOIT être exactement de {len(context.get('available_days', []))}. Si l'utilisateur a demandé 3 jours, fais 3 séances, PAS PLUS.
 
 ## Format de sortie JSON
 
@@ -534,7 +534,6 @@ et augmente progressivement. N'hésitez pas à ajuster si les séances sont trop
         phase: str, volume_mult: float, target_paces: Dict[str, int]
     ) -> Dict[str, Any]:
         """Create a detailed session for a specific day."""
-        
         if day == long_run_day:
             duration = int(90 * volume_mult)
             return {
@@ -572,8 +571,8 @@ et augmente progressivement. N'hésitez pas à ajuster si les séances sont trop
         if phase in ["build", "peak"] and day in [2, 3, 4]:
             if week_num % 2 == 0:
                 # Tempo session
+                tempo_duration = 20 + (5 * min(4, week_num//2))
                 duration = int(50 * volume_mult)
-                tempo_duration = duration - 20
                 return {
                     "day": day,
                     "session_type": "tempo",
@@ -600,14 +599,12 @@ et augmente progressivement. N'hésitez pas à ajuster si les séances sont trop
                     "terrain_type": "track",
                     "elevation_gain": 0,
                     "intervals": [
-                        {"reps": 6, "distance_m": 1000, "pace_per_km": interval_pace, "recovery_seconds": 90}
+                        {"reps": 6 + (week_num//2), "distance_m": 400, "pace_per_km": interval_pace, "recovery_seconds": 60}
                     ],
-                    "workout_details": f"Échauffement 15min, puis 6x1000m à "
-                                       f"{self._format_pace(interval_pace)} avec 90s récup trot, "
-                                       f"retour calme 10min. Travail de VO2max.",
+                    "workout_details": f"Séance VMA: {6 + (week_num//2)}x400m à allure rapide. Récup 1min.",
                 }
         
-        # Default: easy run
+        # Default: Easy Run for any other available day
         duration = int(45 * volume_mult)
         return {
             "day": day,
@@ -701,6 +698,11 @@ et augmente progressivement. N'hésitez pas à ajuster si les séances sont trop
                 self.db.add(session)
                 sessions.append(session)
         
+        # Add Race Day Session
+        race_session = self._create_race_session(goal, user)
+        self.db.add(race_session)
+        sessions.append(race_session)
+        
         self.db.commit()
         return sessions
     
@@ -733,3 +735,40 @@ et augmente progressivement. N'hésitez pas à ajuster si les séances sont trop
             "cross": f"{duration} minutes de vélo, natation ou autre activité sans impact.",
         }
         return descriptions.get(session_type, f"Entraînement de {duration} minutes.")
+
+    def _create_race_session(self, goal: RaceGoal, user: User) -> PlannedSession:
+        """Create the final race session."""
+        
+        # Calculate expected duration based on goal
+        target_time = "N/A"
+        duration = 60 # Default
+        if goal.target_time_seconds:
+             duration = int(goal.target_time_seconds / 60)
+             h = goal.target_time_seconds // 3600
+             m = (goal.target_time_seconds % 3600) // 60
+             s = goal.target_time_seconds % 60
+             target_time = f"{h}h {m:02d}m {s:02d}s"
+             
+        distance = self.RACE_DISTANCES.get(goal.race_type, goal.distance_km or 10)
+        
+        # Determine pace
+        pace = None
+        if goal.target_time_seconds:
+            pace = int(goal.target_time_seconds / distance)
+        
+        return PlannedSession(
+            user_id=user.id,
+            race_goal_id=goal.id,
+            scheduled_date=goal.race_date,
+            week_number=goal.weeks_until_race,
+            session_type="race",
+            title=f"🏁 JOUR DE COURSE : {goal.name.upper()}",
+            description=f"C'est le grand jour ! Objectif : {target_time}. Amusez-vous !",
+            target_duration=duration,
+            target_intensity="max",
+            target_pace_per_km=pace,
+            terrain_type="road", # Default, could be trail
+            elevation_gain=0,
+            workout_details=f"Course officielle de {distance}km. Échauffement léger, gérer l'allure, bien s'hydrater.",
+            status="planned"
+        )

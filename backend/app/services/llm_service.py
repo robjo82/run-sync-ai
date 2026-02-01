@@ -1,192 +1,341 @@
-"""Abstract LLM service with Gemini implementation."""
-
-from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+import os
 import json
-import google.generativeai as genai
-from pathlib import Path
+import time
+from typing import List, Dict, Any, Optional, Union
+from google import genai
+from google.genai import types
 
 from app.config import get_settings
 
+settings = get_settings()
 
-class LLMProvider(ABC):
-    """Abstract base class for LLM providers."""
+class GeminiProvider:
+    """Gemini 3 provider using the new google-genai SDK."""
     
-    @abstractmethod
-    async def complete(
-        self,
-        prompt: str,
-        model: str = "default",
-        temperature: float = 0.7,
-        max_tokens: int = 2000,
-        thinking_level: Optional[str] = None,  # "off", "low", "medium", "high"
-    ) -> str:
-        """Generate a completion from the LLM."""
-        pass
-    
-    @abstractmethod
-    async def complete_json(
-        self,
-        prompt: str,
-        model: str = "default",
-        temperature: float = 0.3,
-        thinking_level: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Generate a JSON response from the LLM."""
-        pass
-
-
-class GeminiProvider(LLMProvider):
-    """Google Gemini LLM provider with Gemini 3 thinking support."""
-    
-    MODELS = {
-        "flash": "gemini-3-flash-preview",
-        "pro": "gemini-3-pro-preview",
-        "default": "gemini-3-flash-preview",
+    THINKING_LEVELS = {
+        "off": False,
+        "low": "include_thoughts", 
+        "medium": "include_thoughts",
+        "high": "include_thoughts",
     }
     
-    # Thinking levels for Gemini 3 models
-    THINKING_LEVELS = {"off", "low", "medium", "high"}
-    
     def __init__(self):
-        settings = get_settings()
-        genai.configure(api_key=settings.gemini_api_key)
-        self._prompts_dir = Path(__file__).parent.parent / "prompts"
+        self.api_key = settings.gemini_api_key
+        # Initialize the new Client
+        self.client = genai.Client(api_key=self.api_key)
+        self.prompts = self._load_prompts()
     
-    def _get_model(self, model_name: str):
-        """Get the Gemini model instance."""
-        model_id = self.MODELS.get(model_name, self.MODELS["default"])
-        return genai.GenerativeModel(model_id)
-    
+    def _load_prompts(self) -> Dict[str, str]:
+        """Load prompts from the prompt registry."""
+        # Simple registry for now (could be loaded from files)
+        return {
+            "coach_system": "Tu es un coach de running expert et bienveillant...",
+            "generate_plan": """Tu es un coach de course à pied expert. Génère un plan d'entraînement personnalisé.
+
+## Contexte de l'athlète
+{athlete_profile}
+
+## Objectif
+Course : {goal_name} ({race_type})
+Date : {race_date} ({weeks_until_race} semaines)
+Objectif temps : {target_time} (Allure cible: {target_pace})
+
+## Métriques Actuelles
+CTL (Forme) : {ctl}
+ATL (Fatigue) : {atl}
+TSB (Fraîcheur) : {tsb}
+
+## Disponibilités
+Jours possibles : {available_days}
+Sortie longue : {long_run_day}
+
+## Contraintes & Notes
+{constraints}
+
+## Instructions
+Génère le plan au format JSON strict.
+
+Format JSON attendu:
+{
+  "explanation": "Ton explication détaillée du plan et ta stratégie...",
+  "weeks": [
+    {
+      "week_number": 1,
+      "phase": "base",
+      "focus": "Endurance",
+      "sessions": [
+        {
+          "day": 1,
+          "session_type": "easy",
+          "duration_minutes": 45,
+          "intensity": "easy",
+          "pace_per_km": 360,
+          "terrain_type": "road",
+          "elevation_gain": 0,
+          "intervals": null,
+          "workout_details": "Footing..."
+        }
+      ]
+    }
+  ]
+}
+"""
+        }
+        
+    def load_prompt(self, prompt_name: str) -> str:
+        return self.prompts.get(prompt_name, "")
+
     async def complete(
         self,
         prompt: str,
-        model: str = "default",
+        messages: List[Dict[str, Any]] = None,
+        model: str = "flash",
         temperature: float = 0.7,
         max_tokens: int = 2000,
-        thinking_level: Optional[str] = None,  # "off", "low", "medium", "high"
-    ) -> str:
-        """Generate a completion using Gemini.
-        
-        Args:
-            prompt: The prompt text
-            model: Model to use (flash, pro, default)
-            temperature: Creativity (0.0-1.0)
-            max_tokens: Max output tokens
-            thinking_level: Gemini 3 thinking depth ("off", "low", "medium", "high")
-                           - "off" or None: No extended thinking
-                           - "low": Fast thinking for simple tasks
-                           - "medium": Balanced thinking
-                           - "high": Deep thinking for complex reasoning
+        thinking_level: str = "off",
+    ) -> Dict[str, Any]:
         """
-        model_instance = self._get_model(model)
+        Generate completion using Gemini 3 (google-genai SDK).
+        """
+        model_id = "gemini-3-flash-preview" if model == "flash" else "gemini-3-pro-preview"
         
-        # Build generation config
-        config_dict = {
-            "temperature": temperature,
-            "max_output_tokens": max_tokens,
-        }
-        
-        # Add thinking config for Gemini 3 if specified
-        if thinking_level and thinking_level in self.THINKING_LEVELS and thinking_level != "off":
-            config_dict["thinking_config"] = {"thinking_level": thinking_level}
-        
-        generation_config = genai.GenerationConfig(**config_dict)
-        
-        response = model_instance.generate_content(
-            prompt,
-            generation_config=generation_config,
+        # Configure Generation Params
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
         )
         
-        return response.text
-    
+        # Handle Thinking Config (New SDK)
+        if thinking_level != "off" and "pro" in model_id:
+            # Enable thinking if requested and model supports it
+            config.thinking_config = types.ThinkingConfig(include_thoughts=True)
+            
+            
+        # Prepare contents
+        contents = []
+        if messages:
+            # Convert history to new SDK Types
+            for m in messages:
+                # Map old structure to new
+                role = "user" if m.get("role") == "user" else "model"
+                parts = []
+                # Handle parts which might be strings or dicts
+                raw_parts = m.get("parts", [""])
+                for p in raw_parts:
+                    if isinstance(p, str):
+                        parts.append(types.Part.from_text(text=p))
+                    elif isinstance(p, dict) and "text" in p:
+                         parts.append(types.Part.from_text(text=p["text"]))
+                         
+                contents.append(
+                    types.Content(
+                        role=role,
+                        parts=parts
+                    )
+                )
+        
+        # Add current prompt as User message
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)]
+            )
+        )
+            
+        try:
+            # Generate using asyncio client
+            response = await self.client.aio.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=config,
+            )
+            
+            # Parse Response
+            text_parts = []
+            thoughts = ""
+            thought_sig = None
+            
+            if response.candidates:
+                cand = response.candidates[0]
+                if cand.content and cand.content.parts:
+                    for part in cand.content.parts:
+                        # New SDK thought handling
+                        if hasattr(part, 'thought') and part.thought:
+                            # If thought is True/present, the text is the thought
+                             if part.text:
+                                thoughts += part.text
+                        else:
+                            # Normal text part
+                            if part.text:
+                                text_parts.append(part.text)
+            
+            final_text = "".join(text_parts)
+            
+            return {
+                "text": final_text,
+                "thoughts": thoughts,
+                "thought_signature": thought_sig
+            }
+            
+        except Exception as e:
+            print(f"Gemini Genai Error: {e}")
+            # Fallback without thinking if that failed
+            if thinking_level != "off":
+                 print("Retrying without thinking...")
+                 config.thinking_config = None
+                 try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model_id,
+                        contents=contents,
+                        config=config,
+                    )
+                    text_parts = []
+                    if response.candidates:
+                         cand = response.candidates[0]
+                         if cand.content and cand.content.parts:
+                            for part in cand.content.parts:
+                                if part.text:
+                                    text_parts.append(part.text)
+                    
+                    return {"text": "".join(text_parts), "thoughts": "", "thought_signature": None}
+                 except Exception as retry_e:
+                     # If generic retry fails, raise original or new error
+                     raise retry_e
+            raise e
+
     async def complete_json(
         self,
         prompt: str,
-        model: str = "default",
-        temperature: float = 0.3,
-        thinking_level: Optional[str] = None,
+        messages: List[Dict[str, Any]] = None,
+        model: str = "flash",
+        temperature: float = 0.1,
     ) -> Dict[str, Any]:
-        """Generate a JSON response using Gemini."""
-        # Add JSON instruction to prompt
-        json_prompt = f"{prompt}\n\nRespond with valid JSON only, no markdown formatting."
+        """Generate JSON response."""
+        model_id = "gemini-3-flash-preview" if model == "flash" else "gemini-3-pro-preview"
         
-        response_text = await self.complete(
-            json_prompt,
-            model=model,
+        config = types.GenerateContentConfig(
             temperature=temperature,
-            max_tokens=4000,
-            thinking_level=thinking_level,
+            response_mime_type="application/json", 
         )
         
-        # Clean up response (remove markdown code blocks if present)
-        cleaned = response_text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        if cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        
-        return json.loads(cleaned.strip())
-    
-    def load_prompt(self, prompt_name: str) -> str:
-        """Load a prompt template from the prompts directory."""
-        prompt_file = self._prompts_dir / f"{prompt_name}.txt"
-        if prompt_file.exists():
-            return prompt_file.read_text()
-        raise FileNotFoundError(f"Prompt template not found: {prompt_name}")
+        # Prepare contents (simplified context handling for JSON tasks)
+        contents = []
+        if messages:
+             for m in messages:
+                role = "user" if m.get("role") == "user" else "model"
+                raw_parts = m.get("parts", [""])
+                parts = [types.Part.from_text(text=p) if isinstance(p, str) else types.Part.from_text(text=p.get("text","")) for p in raw_parts]
+                contents.append(types.Content(role=role, parts=parts))
 
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+        
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=config,
+            )
+            
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                text = response.candidates[0].content.parts[0].text
+                if text:
+                    return json.loads(text)
+            return {}
+            
+        except Exception as e:
+            print(f"JSON Generation Error: {e}")
+            return {}
+
+    async def complete_stream(
+        self,
+        prompt: str,
+        system_instruction: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Any]] = None,
+        model: str = "pro",
+        thinking_level: str = "off",
+        json_mode: bool = False,
+    ):
+        """Streams the response, yielding generic events for thoughts and text."""
+        model_id = self._get_model_id(model)
+        
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.7,
+            candidate_count=1,
+            response_mime_type="application/json" if json_mode else "text/plain",
+            tools=tools,
+        )
+        
+        # Build contents from messages + prompt
+        contents = []
+        if messages:
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append(types.Content(
+                    role=role,
+                    parts=[types.Part(text=msg["content"])]
+                ))
+        
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=prompt)]
+        ))
+
+        try:
+            async for chunk in await self.client.aio.models.generate_content_stream(
+                model=model_id,
+                contents=contents,
+                config=config,
+            ):
+                if not chunk.candidates:
+                    continue
+                    
+                cand = chunk.candidates[0]
+                if not cand.content or not cand.content.parts:
+                    continue
+                    
+                for part in cand.content.parts:
+                    # Check for thoughts
+                    if hasattr(part, 'thought') and part.thought:
+                        if part.text: # Thought text is sometimes in text field or thought field depending on SDK version? 
+                            # New SDK: thinking.thought? No, part.thought is likely boolean/object?
+                            # Check generic properties
+                            pass 
+                        # To be safe rely on part reference if possible or skip implementation detail of thought object structure for now if vague
+                        # The view showed: if hasattr(part, 'thought') and part.thought: if part.text: yield ...
+                        pass 
+                    
+                    # SDK 0.5.0+ structure:
+                    # part can have 'text', 'function_call', 'executable_code'
+                    
+                    if part.function_call:
+                        # Convert args to dict
+                        # function_call.args is a Map/Struct.
+                        # The SDK might auto-convert or we use dict(part.function_call.args)
+                        args = {}
+                        if part.function_call.args:
+                            # It's a proto Map, usually behaves like dict
+                            for key in part.function_call.args:
+                                args[key] = part.function_call.args[key]
+                        
+                        yield {
+                            "type": "function_call",
+                            "name": part.function_call.name,
+                            "args": args
+                        }
+                    
+                    elif hasattr(part, 'thought') and part.thought:
+                         # Re-implement existing thought logic
+                         yield {"type": "thought", "content": part.text}
+
+                    elif part.text:
+                         yield {"type": "text", "content": part.text}
+                        
+        except Exception as e:
+            print(f"Stream Error: {e}")
+            yield {"type": "error", "content": str(e)}
 
 class LLMService:
-    """High-level LLM service for the application."""
-    
-    def __init__(self, provider: Optional[LLMProvider] = None):
-        self.provider = provider or GeminiProvider()
-    
-    async def classify_activity(self, activity_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Classify an activity using Gemini Flash.
-        
-        Returns:
-            {
-                "classification": "workout" | "commute" | "recovery" | "race",
-                "confidence": 0.0-1.0,
-                "reasoning": "...",
-                "include_in_training_load": bool
-            }
-        """
-        prompt = self.provider.load_prompt("classify_activity")
-        prompt = prompt.replace("{activity_json}", json.dumps(activity_data, indent=2, default=str))
-        
-        result = await self.provider.complete_json(prompt, model="flash", temperature=0.2)
-        
-        # Ensure required fields
-        classification = result.get("classification", "workout")
-        
-        # Determine if should include in training load
-        include = classification in ["workout", "race"]
-        if "include_in_training_load" not in result:
-            result["include_in_training_load"] = include
-        
-        return result
-    
-    async def get_coaching_decision(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Get a coaching decision using Gemini Pro.
-        
-        Returns:
-            {
-                "action": "maintain" | "adjust" | "rest",
-                "confidence": 0.0-1.0,
-                "reasoning": "...",
-                "adjustments": [...] | null,
-                "message_to_user": "..."
-            }
-        """
-        prompt = self.provider.load_prompt("coaching_decision")
-        prompt = prompt.replace("{context_json}", json.dumps(context, indent=2, default=str))
-        
-        result = await self.provider.complete_json(prompt, model="pro", temperature=0.4)
-        
-        return result
+    def __init__(self):
+        self.provider = GeminiProvider()

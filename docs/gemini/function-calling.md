@@ -1545,7 +1545,7 @@ your platform of choice.
 
                 # Send request to the model with MCP function declarations
                 response = await client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3-flash-preview",
                     contents=prompt,
                     config=genai.types.GenerateContentConfig(
                         temperature=0,
@@ -1595,7 +1595,7 @@ of choice.
 
     // Send request to the model with MCP tools
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: `What is the weather in London in ${new Date().toLocaleDateString()}?`,
       config: {
         tools: [mcpToTool(client)],  // uses the session, will automatically call the tool
