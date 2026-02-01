@@ -217,7 +217,7 @@ class PlanGeneratorService:
         return f"{minutes}:{seconds:02d}/km"
     
     async def generate_plan(
-        self, goal: RaceGoal, user: User
+        self, goal: RaceGoal, user: User, chat_context: str = ""
     ) -> Tuple[List[PlannedSession], str]:
         """
         Generate a periodized training plan for a race goal.
@@ -240,7 +240,13 @@ class PlanGeneratorService:
         target_paces = self._calculate_target_paces(goal)
         
         # Parse available days (1-7, Monday to Sunday)
+        # Note: Chat context might override this (handled by LLM)
         available_days = [int(d) for d in goal.available_days.split(",") if d.strip()]
+        
+        # Combine notes and chat context
+        user_notes = goal.notes or ""
+        if chat_context:
+            user_notes += f"\n\nCONSIGNES ET CONTRAINTES DE L'ATHLÈTE (CHAT):\n{chat_context}"
         
         # Build comprehensive context for LLM
         context = {
@@ -278,8 +284,8 @@ class PlanGeneratorService:
             "physiological_data": activity_profile.get("physiological_data"),
             "records": activity_profile.get("records"),
             
-            # User notes
-            "user_notes": goal.notes,
+            # User notes including chat constraints
+            "user_notes": user_notes,
         }
         
         # Generate plan using LLM (with fallback)
@@ -371,7 +377,7 @@ class PlanGeneratorService:
 Génère un plan d'entraînement structuré en JSON avec:
 1. Une explication détaillée et spontanée du plan (philosophie, phases, progression). L'explication DOIT être personnalisée par rapport à l'état de forme actuel (CTL) et à l'historique de l'athlète. Justifie tes choix.
 2. Les séances pour chaque semaine avec détails précis.
-3. IMPORTANT : Ne planifie des séances QUE sur les jours disponibles ({context.get('available_days_names')}). Si un jour n'est pas disponible, c'est IMPOSSIBLE de s'entraîner ce jour-là.
+3. IMPORTANT : Planifie les séances sur les jours disponibles ({context.get('available_days_names')}). Si des contraintes sont précisées dans les notes/chat, elles sont prioritaires sur cette liste.
 
 ## Format de sortie JSON
 

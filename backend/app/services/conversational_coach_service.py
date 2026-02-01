@@ -215,15 +215,29 @@ Attention:
         # Fallback: Keyword analysis if LLM fails or is unclear
         message_lower = message.lower()
         
-        # Strong keywords for plan request
+        # Explicit plan creation commands
+        if any(phrase in message_lower for phrase in ["génère mon plan", "générer mon plan", "créer mon plan", "faire mon plan"]):
+            return self.INTENT_PLAN_REQUEST
+
+        # General plan keywords
         if any(w in message_lower for w in ["créer un plan", "faire un plan", "générer un plan", "mon plan", "programme"]):
             if "objectif" in message_lower or "course" in message_lower:
                 return self.INTENT_PLAN_REQUEST
                 
-        # Strong keywords for adjustment
-        if any(w in message_lower for w in ["modifier", "changer", "déplacer", "annuler", "remplacer"]):
-            if "séance" in message_lower or "plan" in message_lower:
+        # Fallback: Training days mention (crucial for plan creation steps)
+        days_keywords = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche", "semaine", "jours"]
+        if any(d in message_lower for d in days_keywords):
+            # If we are talking about training days
+            if any(w in message_lower for w in ["entrainer", "entraînement", "dispo", "peux", "libre"]):
+                # If plan not generated yet, it's a request to continue creation
+                if not goal.plan_generated:
+                    return self.INTENT_PLAN_REQUEST
+                # If plan exists, it might be an adjustment
                 return self.INTENT_ADJUSTMENT
+                
+        # Strong keywords for adjustment
+        if any(w in message_lower for w in ["modifier", "changer", "déplacer", "annuler", "remplacer", "décale"]):
+            return self.INTENT_ADJUSTMENT
         
         return self.INTENT_GENERAL
     
@@ -301,7 +315,7 @@ Attention:
         generator = PlanGeneratorService(self.db)
         
         try:
-            sessions, explanation = await generator.generate_plan(goal, user)
+            sessions, explanation = await generator.generate_plan(goal, user, chat_context=history)
             
             # Mark goal as having plan
             goal.plan_generated = True
@@ -410,12 +424,8 @@ Sois spécifique, pas générique."""
         )
         
         if not sessions:
-            return (
-                "Tu n'as pas encore de plan actif ! 📋\n\n"
-                "Dis-moi \"génère mon plan\" et je te proposerai un programme adapté "
-                "à ton profil et tes contraintes.",
-                None
-            )
+            # Smart redirect: User wants to adjust/create but has no plan -> Create it
+            return await self._handle_plan_request(message, goal, user, thread, athlete_profile)
         
         # Build context for LLM
         sessions_context = "\n".join([
